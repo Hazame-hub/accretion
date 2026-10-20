@@ -4,16 +4,20 @@ package proxmox
 //
 // The walk is /nodes, then each node's qemu and lxc lists, then per guest the
 // config (where the SMBIOS UUID, the MACs, the sizing and the template flag
-// live) and status/current (where the current memory allocation lives). A
-// node that does not answer costs that node's guests and nothing else: the
-// walk returns what it got together with an error naming the node, which a
-// caller treats as an incomplete list, never as proof of absence.
+// live) and status/current (where the current memory allocation lives), then
+// each node's storages, then the cluster's SDN vnets. A node that does not
+// answer costs that node's guests and storages and nothing else: the walk
+// returns what it got together with an error naming the node, which a caller
+// treats as an incomplete list, never as proof of absence. The same holds for
+// the SDN, which a token without SDN.Audit is shown as empty: that is
+// reported as an error, not as a cluster with no networks.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +35,8 @@ func New() Provider { return Provider{} }
 
 // Connect implements provider.Provider. It does not dial: the first Discover
 // finds out whether the cluster answers. A preflight, where an embedder has
-// one, is the place that proves a credential before it is stored.
+// one, is the place that proves a credential before it is stored. The session
+// lists every kind it knows, storages and SDN vnets included.
 func (Provider) Connect(_ context.Context, cfg provider.Config) (provider.Session, error) {
 	token, _ := cfg.Params["api_token"].(string)
 	c, err := NewClient(cfg.Endpoint, token, cfg.VerifyTLS)
@@ -41,18 +46,26 @@ func (Provider) Connect(_ context.Context, cfg provider.Config) (provider.Sessio
 	return NewSession(c), nil
 }
 
-// NewSession is a discovery session over a client the caller already has.
-func NewSession(c *Client) provider.Session { return &session{c: c} }
+// NewSession is a discovery session over a client the caller already has,
+// listing every kind: nodes, guests, templates, storages and SDN vnets.
+func NewSession(c *Client) provider.Session { return &session{c: c, context: true} }
+
+// NewGuestSession lists nodes, guests and templates only, and never asks for
+// storages or the SDN. It is the listing an embedder had before storages and
+// vnets were discovered, for one whose screens must not change.
+func NewGuestSession(c *Client) provider.Session { return &session{c: c} }
 
 type session struct {
 	c *Client
+	// context adds storages and SDN vnets to the walk.
+	context bool
 }
 
 // capabilities is what a Proxmox session can say. GuestUUID holds for qemu
 // guests only — a container has no DMI — which is why the contract checks it
 // per resource and why LXC identity falls to the MAC tier.
 var capabilities = provider.Capabilities{
-	Kinds:        []provider.Kind{provider.KindHost, provider.KindVM, provider.KindContainer, provider.KindTemplate},
+	Kinds:        guestKinds,
 	GuestUUID:    true,
 	GuestMACs:    true,
 	GuestNetwork: true,
@@ -64,8 +77,19 @@ var capabilities = provider.Capabilities{
 	Memory:       true,
 }
 
+// guestKinds are what a guest session lists; a full session adds
+// contextKinds.
+var (
+	guestKinds   = []provider.Kind{provider.KindHost, provider.KindVM, provider.KindContainer, provider.KindTemplate}
+	contextKinds = []provider.Kind{provider.KindStorage, provider.KindNetwork}
+)
+
 func (s *session) Capabilities(context.Context) (provider.Capabilities, error) {
-	return capabilities, nil
+	caps := capabilities
+	if s.context {
+		caps.Kinds = append(append([]provider.Kind{}, guestKinds...), contextKinds...)
+	}
+	return caps, nil
 }
 
 func (s *session) Close() error { return nil }
@@ -131,8 +155,122 @@ func (s *session) Discover(ctx context.Context) ([]provider.Resource, error) {
 				out = append(out, res)
 			}
 		}
+		if s.context {
+			storages, err := s.nodeStorages(ctx, n.Node)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			out = append(out, storages...)
+		}
+	}
+	if s.context {
+		vnets, err := s.vnets(ctx)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		out = append(out, vnets...)
 	}
 	return out, errors.Join(errs...)
+}
+
+// storageRow is one row of GET /nodes/{node}/storage.
+type storageRow struct {
+	Storage string `json:"storage"`
+	Type    string `json:"type"`
+	Content string `json:"content"`
+	Active  int    `json:"active"`
+	Enabled int    `json:"enabled"`
+	Shared  int    `json:"shared"`
+	Total   uint64 `json:"total"`
+	Used    uint64 `json:"used"`
+	Avail   uint64 `json:"avail"`
+}
+
+// nodeStorages lists one node's storages, each as a storage resource whose
+// parent is the node and whose one disk is the storage's size and use. A
+// shared storage is listed once per node that sees it: placement weighs what
+// each node can reach.
+func (s *session) nodeStorages(ctx context.Context, node string) ([]provider.Resource, error) {
+	var rows []storageRow
+	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/storage", url.PathEscape(node)), &rows); err != nil {
+		return nil, fmt.Errorf("proxmox: node %s: list storage: %w", node, err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Storage < rows[j].Storage })
+	out := make([]provider.Resource, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, storageResource(node, r))
+	}
+	return out, nil
+}
+
+func storageResource(node string, r storageRow) provider.Resource {
+	raw, _ := json.Marshal(r)
+	state := "stopped"
+	if r.Active == 1 {
+		state = "running"
+	}
+	return provider.Resource{
+		Ref:      provider.Ref{Kind: provider.KindStorage, ID: node + "/" + r.Storage},
+		Name:     r.Storage,
+		Parent:   &provider.Ref{Kind: provider.KindHost, ID: node},
+		Tags:     []string{},
+		State:    state,
+		Identity: provider.Identity{MACs: []string{}, IPs: []string{}},
+		Facts: provider.Facts{
+			Disks:             []provider.Disk{{Mount: r.Storage, Total: r.Total, Used: r.Used, FsType: r.Type}},
+			NetworkInterfaces: []provider.Interface{},
+		},
+		Raw: raw,
+	}
+}
+
+// vnetRow is one row of GET /cluster/sdn/vnets?pending=1.
+type vnetRow struct {
+	Vnet    string `json:"vnet"`
+	Zone    string `json:"zone"`
+	State   string `json:"state,omitempty"`
+	Pending *struct {
+		Zone string `json:"zone"`
+	} `json:"pending,omitempty"`
+}
+
+// vnets lists the cluster's SDN vnets, each as a network resource. Its zone
+// is in Raw; one that is defined but not applied is in state "unknown",
+// since no node has it yet.
+func (s *session) vnets(ctx context.Context) ([]provider.Resource, error) {
+	if err := s.c.RequireSDNAudit(ctx); err != nil {
+		return nil, err
+	}
+	var rows []vnetRow
+	if err := s.c.Get(ctx, "/cluster/sdn/vnets?pending=1", &rows); err != nil {
+		return nil, fmt.Errorf("proxmox: list SDN vnets: %w", err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Vnet < rows[j].Vnet })
+	out := make([]provider.Resource, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, vnetResource(r))
+	}
+	return out, nil
+}
+
+func vnetResource(r vnetRow) provider.Resource {
+	if r.Zone == "" && r.Pending != nil {
+		r.Zone = r.Pending.Zone
+	}
+	raw, _ := json.Marshal(r)
+	state := "running"
+	if r.State != "" {
+		state = "unknown"
+	}
+	return provider.Resource{
+		Ref:      provider.Ref{Kind: provider.KindNetwork, ID: r.Vnet},
+		Name:     r.Vnet,
+		Tags:     []string{},
+		State:    state,
+		Identity: provider.Identity{MACs: []string{}, IPs: []string{}},
+		Facts:    provider.Facts{Disks: []provider.Disk{}, NetworkInterfaces: []provider.Interface{}},
+		Raw:      raw,
+	}
 }
 
 // Describe re-reads one guest. A host ref describes as empty facts: the
@@ -149,6 +287,34 @@ func (s *session) Describe(ctx context.Context, ref provider.Ref) (provider.Fact
 			}
 		}
 		return provider.Facts{}, fmt.Errorf("proxmox: no node %q", ref.ID)
+	}
+	if s.context && ref.Kind == provider.KindStorage {
+		node, name, ok := strings.Cut(ref.ID, "/")
+		if !ok || node == "" || name == "" || strings.Contains(name, "/") {
+			return provider.Facts{}, fmt.Errorf("proxmox: %q is not a node/storage ref", ref.ID)
+		}
+		var rows []storageRow
+		if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/storage", url.PathEscape(node)), &rows); err != nil {
+			return provider.Facts{}, fmt.Errorf("proxmox: node %s: list storage: %w", node, err)
+		}
+		for _, r := range rows {
+			if r.Storage == name {
+				return storageResource(node, r).Facts, nil
+			}
+		}
+		return provider.Facts{}, fmt.Errorf("proxmox: no storage %q on node %s", name, node)
+	}
+	if s.context && ref.Kind == provider.KindNetwork {
+		vnets, err := s.vnets(ctx)
+		if err != nil {
+			return provider.Facts{}, err
+		}
+		for _, v := range vnets {
+			if v.Ref.ID == ref.ID {
+				return v.Facts, nil
+			}
+		}
+		return provider.Facts{}, fmt.Errorf("proxmox: no SDN vnet %q", ref.ID)
 	}
 	node, kind, vmid, err := splitRef(ref.ID)
 	if err != nil {
