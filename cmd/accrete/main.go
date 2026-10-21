@@ -3,8 +3,8 @@
 // now.
 //
 //	accrete plan    -f env.yaml [--state accrete.state.json] [-o text|json]
-//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve]
-//	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve]
+//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
+//	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
 //
 // plan reads and never writes: it sends the provider GET requests only, no
 // machine is changed, and the state file is not rewritten. The plan comes
@@ -42,8 +42,8 @@ const usage = `accrete plans and applies an Environment manifest.
 
 Usage:
   accrete plan    -f env.yaml [--state FILE] [-o text|json] [--offline]
-  accrete apply   -f env.yaml [--state FILE] [--auto-approve]
-  accrete destroy -f env.yaml [--state FILE] [--auto-approve]
+  accrete apply   -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
+  accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -54,7 +54,9 @@ plan changes nothing. apply builds what the plan says to create, resumes
 what an interrupted apply left half-built, removes what the manifest no
 longer declares and powers machines as declared. destroy removes every
 machine the state records for the environment. Both print the plan and ask
-for "yes" first, unless --auto-approve.
+for "yes" first, unless --auto-approve. A recorded machine the provider no
+longer lists keeps its record (the token may just not see it) unless
+--forget-gone.
 
 Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
 declined, or a machine failed or was not done, 2 accrete could not plan or
@@ -77,10 +79,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fs.SetOutput(stderr)
 	file := fs.String("f", "", "the Environment manifest (YAML)")
 	statePath := fs.String("state", "", "the state file (default: accrete.state.json beside the manifest)")
-	output, offline, autoApprove := new(string), new(bool), new(bool)
+	output, offline, autoApprove, forgetGone := new(string), new(bool), new(bool), new(bool)
 	defaultTimeout := 2 * time.Minute
 	if writes {
 		autoApprove = fs.Bool("auto-approve", false, "do not ask before acting")
+		forgetGone = fs.Bool("forget-gone", false, "retire the records of machines to delete that the provider no longer lists")
 		defaultTimeout = time.Hour
 	} else {
 		output = fs.String("o", "text", "output: text or json")
@@ -177,7 +180,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		statePath: *statePath, state: state, env: env, session: session,
 		provider: ProviderID(*ref), blueprints: driver.Blueprints(), recipe: driver.Recipe, explain: driver.Explain,
 	}
-	a.gone = world.GoneDeletes
+	a.gone, a.forgetGone = world.GoneDeletes, *forgetGone
 	return a.run(p, world.Notes)
 }
 

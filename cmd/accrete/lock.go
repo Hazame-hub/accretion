@@ -65,8 +65,13 @@ func lockState(statePath string, note func(string)) (*stateLock, error) {
 			return nil, err
 		}
 		if moved, err := os.ReadFile(aside); err != nil || string(moved) != string(old) {
-			// Somebody else's fresh lock was moved: put it back and stop.
-			_ = os.Rename(aside, path)
+			// Somebody else's fresh lock was moved: put it back and stop. A
+			// link, not a rename, so a lock a third run made meanwhile is
+			// never overwritten; then the moved one is left aside, named.
+			if err := os.Link(aside, path); err != nil {
+				return nil, fmt.Errorf("%s changed while it was being taken over, and could not be put back (%v); another accrete is starting on this state, and its lock is now %s", path, err, aside)
+			}
+			os.Remove(aside)
 			return nil, fmt.Errorf("%s changed while it was being taken over; another accrete is starting on this state", path)
 		}
 		os.Remove(aside)

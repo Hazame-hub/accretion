@@ -48,6 +48,8 @@ type applier struct {
 	// gone are recorded machines the plan would delete and the provider no
 	// longer has: only their record is retired.
 	gone map[uuid.UUID]bool
+	// forgetGone retires the records of gone machines (--forget-gone).
+	forgetGone bool
 }
 
 // errState is a state that could not be written. The run stops on it: what
@@ -124,8 +126,12 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 			steps = append(steps, step{"delete " + name + " (" + e.ResourceRefID + ")", func() error { return a.delete(e) }})
 		case e.Action == plan.ActionChange && e.Apply == plan.ApplyPower:
 			steps = append(steps, step{"power " + e.Power + " " + name, func() error { return a.power(e) }})
-		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.gone[*e.RealizationID]:
+		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.gone[*e.RealizationID] && a.forgetGone:
 			steps = append(steps, step{"retire " + name + " (" + e.ResourceRefID + " is already gone)", func() error { return a.delete(e) }})
+		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.gone[*e.RealizationID]:
+			// The provider lists nothing at the ref, but it leaves out guests
+			// the token may not see, so this is no proof the machine is gone.
+			notDone = append(notDone, fmt.Sprintf("%s %s: %s; if it was removed, run again with --forget-gone to retire its record", e.Action, name, e.Reason))
 		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.cmd == "destroy":
 			// Not confirmed: left alone, and destroy has not removed it.
 			notDone = append(notDone, fmt.Sprintf("%s %s: %s", e.Action, name, e.Reason))
@@ -529,7 +535,11 @@ func (a *applier) abandon(run uuid.UUID) error {
 			return fmt.Errorf("the provider's listing is incomplete (%v), so a clone of %s still in progress could not be ruled out; run accrete destroy again", err, r.Name)
 		}
 		for _, res := range resources {
-			if res.Ref.Kind == provider.KindVM && res.Identity.SMBIOSUUID == "" {
+			// A clone in progress has no name of its own yet (the provider
+			// lists it as vm-<id>) or already has this machine's; any other
+			// guest without an identity is somebody else's.
+			unnamed := res.Name == "vm-"+res.Identity.HypervisorGuestID
+			if res.Ref.Kind == provider.KindVM && res.Identity.SMBIOSUUID == "" && (unnamed || res.Name == r.Name) {
 				return fmt.Errorf("%s has no identity yet, so it may be %s's clone still copying; run accrete apply to finish it, or accrete destroy again once it is done", res.Ref.ID, r.Name)
 			}
 		}

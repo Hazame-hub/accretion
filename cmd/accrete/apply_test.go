@@ -243,7 +243,7 @@ func TestDestroyRemovesWhatApplyBuilt(t *testing.T) {
 
 // A delete whose answer was lost leaves the guest gone and the record
 // current. The next destroy sees nothing at the ref under a complete listing
-// and retires the record.
+// and, told to forget gone machines, retires the record.
 func TestALostDeleteAnswerIsRetiredByTheNextRun(t *testing.T) {
 	l := newApplyLab(t, "")
 	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
@@ -254,7 +254,7 @@ func TestALostDeleteAnswerIsRetiredByTheNextRun(t *testing.T) {
 	if l.pve.Guest(100) != nil {
 		t.Fatal("the dropped DELETE was not carried out; the test proves nothing")
 	}
-	out, code := l.accrete("", "destroy", "--auto-approve")
+	out, code := l.accrete("", "destroy", "--auto-approve", "--forget-gone")
 	if code != 0 || len(current(l.loadState())) != 0 {
 		t.Fatalf("second destroy: exit %d, %d still recorded\n%s", code, len(current(l.loadState())), out)
 	}
@@ -276,6 +276,25 @@ func TestDestroyKeepsARecordWhileItsCloneMayStillBeCopying(t *testing.T) {
 	}
 	if s := l.loadState(); len(s.Applying) != 1 {
 		t.Errorf("the record was dropped while a clone may be copying")
+	}
+}
+
+// A guest of somebody else's that has no SMBIOS UUID (an old or imported
+// one, with a name of its own) is not taken for a clone still copying.
+func TestDestroyDropsANeverAnsweredCloneDespiteAnUnrelatedGuestWithoutIdentity(t *testing.T) {
+	l := newApplyLab(t, "")
+	l.pve.CutNext(`^POST /nodes/pve1/qemu/9000/clone$`)
+	l.accrete("", "apply", "--auto-approve")
+	if s := l.loadState(); len(s.Applying) != 1 || s.Applying[0].ResourceRefID != "" {
+		t.Fatalf("applying: %+v", s.Applying)
+	}
+	l.pve.Guests[150] = &pvetest.Guest{VMID: 150, Kind: "qemu", Status: "running", Config: map[string]any{"name": "legacy-db"}}
+	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 0 || len(l.loadState().Applying) != 0 {
+		t.Fatalf("destroy: exit %d, applying %+v\n%s", code, l.loadState().Applying, out)
+	}
+	if l.pve.Guest(150) == nil {
+		t.Error("the unrelated guest was removed")
 	}
 }
 
@@ -414,7 +433,9 @@ func TestTheStateRoundTripsWithAnApplyingRecord(t *testing.T) {
 	}
 }
 
-// A machine removed by hand: destroy retires its record, and sends no
+// A machine removed by hand: the provider listing nothing at its ref is no
+// proof (it leaves out guests the token cannot see), so destroy keeps the
+// record and exits 1. With --forget-gone it retires the record, and sends no
 // DELETE for it.
 func TestDestroyRetiresAMachineAlreadyGone(t *testing.T) {
 	l := newApplyLab(t, "")
@@ -423,6 +444,10 @@ func TestDestroyRetiresAMachineAlreadyGone(t *testing.T) {
 	}
 	delete(l.pve.Guests, 100)
 	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 1 || !strings.Contains(out, "run again with --forget-gone") || len(current(l.loadState())) != 1 {
+		t.Fatalf("destroy without --forget-gone: exit %d, %d recorded\n%s", code, len(current(l.loadState())), out)
+	}
+	out, code = l.accrete("", "destroy", "--auto-approve", "--forget-gone")
 	if code != 0 || !strings.Contains(out, "retire web/0 (pve1/qemu/100 is already gone)") || !strings.Contains(out, "already gone; record retired") {
 		t.Fatalf("destroy: exit %d\n%s", code, out)
 	}
