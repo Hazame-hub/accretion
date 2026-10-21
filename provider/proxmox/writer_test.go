@@ -29,6 +29,9 @@ func TestProxmoxWriteContract(t *testing.T) {
 		InterruptNextClone: func() {
 			pve.CutNext(`^POST /nodes/pve1/qemu/\d+/config$`)
 		},
+		LoseNextCloneAnswer: func() {
+			pve.DropNext(`^POST /nodes/pve1/qemu/9000/clone$`)
+		},
 	})
 	for _, w := range pve.Writes() {
 		if w == "DELETE /nodes/pve1/qemu/101?purge=1&destroy-unreferenced-disks=1" {
@@ -135,31 +138,66 @@ func TestAnInterruptedCloneIsStampedOverItsOwnUUID(t *testing.T) {
 	}
 }
 
-// A clone whose answer is lost made its guest. The verb says the outcome is
-// unknown rather than trying another id, and the retry finds the guest by
-// its mark while the listing does not name it yet.
+// A clone whose answer is lost made its guest. The verb carries on with
+// that guest, recognised by its name and mark once its clone lock goes,
+// rather than trying another id.
 func TestALostCloneAnswerNeverMakesASecondGuest(t *testing.T) {
 	pve := pvetest.New(t)
 	w := writerOn(t, pve)
 	req := provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-4", MintUUID: mintA, OwnerMark: "accrete:run-e",
 		Shape: provider.Shape{Cores: 4}}
 	pve.DropNext(`^POST /nodes/pve1/qemu/9000/clone$`)
-	var unknown *provider.OutcomeUnknownError
-	if _, err := w.Clone(context.Background(), req); !errors.As(err, &unknown) {
-		t.Fatalf("Clone with a lost answer: want an OutcomeUnknownError, got %v", err)
-	}
-	if n := pve.Named("web-4"); len(n) != 1 {
-		t.Fatalf("after a lost answer, guests named web-4: %v, want the one clone", n)
-	}
 	m, err := w.Clone(context.Background(), req)
-	if err != nil || m.Ref.ID != "pve1/qemu/100" {
-		t.Fatalf("retried Clone = %+v, %v", m, err)
+	if err != nil || m.Ref.ID != "pve1/qemu/100" || !m.Applied {
+		t.Fatalf("Clone with a lost answer = %+v, %v", m, err)
 	}
 	if n := pve.Named("web-4"); len(n) != 1 {
-		t.Errorf("after the retry, guests named web-4: %v, want one", n)
+		t.Fatalf("guests named web-4: %v, want the one clone", n)
 	}
 	if g := pve.Guest(100); g.Config["smbios1"] != "uuid="+mintA || g.Config["cores"] != "4" {
-		t.Errorf("the found clone was not finished: %v", g.Config)
+		t.Errorf("the clone was not finished: %v", g.Config)
+	}
+}
+
+// A clone task whose status cannot be read is the same: the guest is there,
+// and it is this clone's.
+func TestAnUnreadableCloneTaskNeverMakesASecondGuest(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	pve.FailNext(`^GET /nodes/pve1/tasks/`, 3)
+	m, err := w.Clone(context.Background(), provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-7",
+		MintUUID: mintA, OwnerMark: "accrete:run-h"})
+	if err != nil || m.Ref.ID != "pve1/qemu/100" {
+		t.Fatalf("Clone with an unreadable task = %+v, %v", m, err)
+	}
+	if n := pve.Named("web-7"); len(n) != 1 {
+		t.Errorf("guests named web-7: %v, want one", n)
+	}
+	// A resize task whose status cannot be read: the outcome is unknown.
+	pve.FailNext(`^GET /nodes/pve1/tasks/`, 3)
+	var unknown *provider.OutcomeUnknownError
+	if _, err := w.Clone(context.Background(), provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-7",
+		MintUUID: mintA, OwnerMark: "accrete:run-h", Shape: provider.Shape{DiskGB: 40}}); !errors.As(err, &unknown) {
+		t.Fatalf("resize with an unreadable task: want an OutcomeUnknownError, got %v", err)
+	}
+}
+
+// A guest carrying the clone's name and mark that runs under another
+// identity is in use: it is not re-stamped.
+func TestARunningGuestIsNotReStamped(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	req := provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-8", MintUUID: mintA, OwnerMark: "accrete:run-i"}
+	if _, err := w.Clone(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	pve.SetStatus(100, "running")
+	req.MintUUID = "22222222-3333-4444-8555-666666666666"
+	if _, err := w.Clone(context.Background(), req); err == nil {
+		t.Fatal("Clone re-stamped a running guest")
+	}
+	if got := pve.Guest(100).Config["smbios1"]; got != "uuid="+mintA {
+		t.Errorf("the running guest now carries %v", got)
 	}
 }
 

@@ -91,6 +91,10 @@ type Server struct {
 	// request out and holds its answer back for delay: a late answer.
 	delayNext *regexp.Regexp
 	delay     time.Duration
+	// failing, while failTimes > 0, answers matching requests 500 without
+	// carrying them out.
+	failing   *regexp.Regexp
+	failTimes int
 	// refuseToken answers every request 401.
 	refuseToken bool
 }
@@ -132,6 +136,14 @@ func (s *Server) DelayNext(pattern string, d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.delayNext, s.delay = regexp.MustCompile(pattern), d
+}
+
+// FailNext makes the next n requests whose "METHOD /path" matches pattern
+// answer 500 without being carried out, as an overloaded pveproxy does.
+func (s *Server) FailNext(pattern string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failing, s.failTimes = regexp.MustCompile(pattern), n
 }
 
 // CutNext makes the next request whose "METHOD /path" matches pattern fail
@@ -270,6 +282,11 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 				_ = conn.Close()
 			}
 		}
+		return
+	}
+	if s.failTimes > 0 && s.failing.MatchString(r.Method+" "+p) {
+		s.failTimes--
+		fail(http.StatusInternalServerError, "pvetest: failing on purpose")
 		return
 	}
 	// A dropped answer: the work below is done, then the connection is cut.

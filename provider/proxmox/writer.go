@@ -35,16 +35,18 @@ var cpuModel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // unknownAfter wraps an error from a call that may have been carried out: a
 // task that outlived its wait, a request whose answer never came or came too
-// late (a transport error, the per-call timeout, an answer cut off), or a
-// wait cut short by the caller's context. Anything else is a known outcome (an API refusal, a task
+// late (a transport error, the per-call timeout, an answer cut off), a task
+// whose status could not be read, or a wait cut short by the caller's
+// context. Anything else is a known outcome (an API refusal, a task
 // that ran and failed, a guard that said no) and is returned as is.
 func unknownAfter(op string, err error) error {
 	if err == nil {
 		return nil
 	}
 	var timeout *TaskTimeoutError
+	var unreadable *TaskUnreadableError
 	var transport *url.Error
-	if errors.As(err, &timeout) || errors.As(err, &transport) ||
+	if errors.As(err, &timeout) || errors.As(err, &unreadable) || errors.As(err, &transport) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return &provider.OutcomeUnknownError{Op: op, Err: err}
@@ -204,16 +206,19 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 				vmid, cloned = next, true
 				break
 			}
-			// Only the API refusing the id means nothing was made: the id
-			// was taken in the meantime, by a guest that is not this
-			// clone's (findByMark found none). A lost or late answer may
-			// have made the clone, and is unknown; the retry finds it by
-			// its mark.
-			var refused *APIError
-			if errors.As(err, &refused) && attempt < 2 {
-				if g, lookErr := s.c.FindGuest(ctx, next); lookErr == nil && g != nil {
-					continue
-				}
+			// Whatever the error, the guest at the id says what happened:
+			// this clone's (the request was carried out and its answer or
+			// its task's was lost) is carried on with; somebody else's
+			// means the id was taken in the meantime and nothing of this
+			// clone is there, so the next id is tried. Nothing there, or
+			// not readable, is the error as it came.
+			ours, taken, lookErr := s.ours(ctx, node, next, req.Name, req.OwnerMark)
+			if lookErr == nil && ours {
+				vmid, cloned = next, true
+				break
+			}
+			if lookErr == nil && taken && attempt < 2 {
+				continue
 			}
 			return provider.Machine{}, unknownAfter("proxmox: clone "+req.Name, err)
 		}
@@ -221,6 +226,11 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 		// A given id, or the one found by mark: the clone marker says
 		// whether the guest there is this clone's.
 		done, err := s.c.CheckCloneTarget(ctx, node, vmid, req.Name, req.OwnerMark)
+		var api *APIError
+		var transport *url.Error
+		if err != nil && (errors.As(err, &api) || errors.As(err, &transport)) {
+			return provider.Machine{}, fmt.Errorf("proxmox: check vmid %s before cloning: %w", vmid, err)
+		}
 		if err != nil {
 			return provider.Machine{}, provider.Refused("%s", err.Error())
 		}
@@ -242,6 +252,14 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 	// replaced. The other smbios1 fields are kept.
 	form := url.Values{}
 	if !SameUUID(cfg.uuid(), provider.UUIDForms(req.MintUUID)) {
+		// A clone never stamped has never booted. One that runs is in use
+		// under another identity, and is not re-stamped from under it.
+		if st, err := s.c.ReadPower(ctx, node, "qemu", vmid); err != nil {
+			return provider.Machine{}, unknownAfter("proxmox: clone "+req.Name, err)
+		} else if st.Status != "stopped" {
+			return provider.Machine{}, fmt.Errorf("proxmox: vmid %s (%s) carries this clone's name and mark but runs as SMBIOS UUID %s, not the minted %s; it is not re-stamped while in use",
+				vmid, req.Name, cfg.uuid(), req.MintUUID)
+		}
 		form.Set("smbios1", withUUID(cfg.str("smbios1"), strings.ToLower(req.MintUUID)))
 	}
 	set := func(key, want string) {
@@ -331,6 +349,10 @@ func (s *session) findByMark(ctx context.Context, name, mark string) (node, vmid
 		if err == nil && cfg.str("name") == "" && cfg.str("lock") == "clone" {
 			cfg, err = s.c.awaitUnlocked(ctx, g.Node, id)
 		}
+		var gone *APIError
+		if err != nil && g.Name == "" && errors.As(err, &gone) {
+			continue // an unnamed guest that went away meanwhile is not this clone
+		}
 		if err != nil {
 			return "", "", fmt.Errorf("proxmox: read %s/qemu/%s to see whether it is this clone: %w", g.Node, id, err)
 		}
@@ -339,6 +361,29 @@ func (s *session) findByMark(ctx context.Context, name, mark string) (node, vmid
 		}
 	}
 	return "", "", nil
+}
+
+// ours reads the guest at vmid: whether it is this clone's (named name,
+// carrying mark, once a clone in progress has finished), and whether any
+// guest has the id at all.
+func (s *session) ours(ctx context.Context, node, vmid, name, mark string) (ours, taken bool, err error) {
+	cfg, err := s.c.readConfig(ctx, node, vmid)
+	if err != nil {
+		g, findErr := s.c.FindGuest(ctx, vmid)
+		if findErr != nil {
+			return false, false, findErr
+		}
+		if g != nil && g.Node == node {
+			return false, true, err // there, and unreadable
+		}
+		return false, g != nil, nil
+	}
+	if cfg.str("name") == "" && cfg.str("lock") == "clone" {
+		if cfg, err = s.c.awaitUnlocked(ctx, node, vmid); err != nil {
+			return false, true, err
+		}
+	}
+	return cfg.str("name") == name && strings.TrimSpace(cfg.str("description")) == mark, true, nil
 }
 
 // withUUID is an smbios1 line with its uuid field set, every other field
@@ -509,7 +554,7 @@ func (s *session) Power(ctx context.Context, m provider.Target, want provider.Po
 		return provider.PowerResult{}, unknownAfter("proxmox: power "+m.Ref.ID, err)
 	}
 	if !out.OK {
-		if timedOut, _ := out.Data["timed_out"].(bool); timedOut {
+		if out.Unknown {
 			return provider.PowerResult{}, &provider.OutcomeUnknownError{Op: "proxmox: power " + m.Ref.ID, Err: errors.New(out.Message)}
 		}
 		return provider.PowerResult{}, fmt.Errorf("proxmox: power %s: %s", m.Ref.ID, out.Message)
@@ -544,7 +589,7 @@ func (s *session) Delete(ctx context.Context, m provider.Target, opts provider.D
 				return provider.Deleted{}, unknownAfter("proxmox: stop "+m.Ref.ID, err)
 			}
 			if !stop.OK {
-				if timedOut, _ := stop.Data["timed_out"].(bool); timedOut {
+				if stop.Unknown {
 					return provider.Deleted{}, &provider.OutcomeUnknownError{Op: "proxmox: stop " + m.Ref.ID, Err: errors.New(stop.Message)}
 				}
 				return provider.Deleted{}, fmt.Errorf("proxmox: stop %s before deleting it: %s", m.Ref.ID, stop.Message)
