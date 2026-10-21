@@ -40,7 +40,9 @@ type fileWorld struct {
 	session    provider.Session // nil: the provider is not asked
 	// notAsked says why session is nil.
 	notAsked string
-	now      func() time.Time
+	// explain says what to check for a provider error; nil adds nothing.
+	explain func(error) string
+	now     func() time.Time
 
 	// Notes are what Read could not do, for the operator, beside the plan.
 	Notes []string
@@ -52,6 +54,16 @@ type fileWorld struct {
 
 func (w *fileWorld) note(format string, args ...any) {
 	w.Notes = append(w.Notes, fmt.Sprintf(format, args...))
+}
+
+// why is err with what the provider says to check for it.
+func (w *fileWorld) why(err error) string {
+	if w.explain != nil {
+		if hint := w.explain(err); hint != "" {
+			return err.Error() + " (" + hint + ")"
+		}
+	}
+	return err.Error()
 }
 
 func (w *fileWorld) unconfirmed(r plan.Realization, why string) {
@@ -130,8 +142,8 @@ func (w *fileWorld) Read() plan.Snapshot {
 		if rd, ok := w.session.(sdnReader); !ok {
 			snap.SDNError = notRead
 		} else if sdn, err := rd.ObservedSDN(w.ctx); err != nil {
-			snap.SDNError = err.Error()
-			w.note("the provider's networks could not be read: %v", err)
+			snap.SDNError = w.why(err)
+			w.note("the provider's networks could not be read: %s", w.why(err))
 		} else {
 			snap.SDN = &sdn
 		}
@@ -140,8 +152,8 @@ func (w *fileWorld) Read() plan.Snapshot {
 		if rd, ok := w.session.(capacityReader); !ok {
 			snap.CapacityError = notRead
 		} else if c, err := rd.ObservedCapacity(w.ctx); err != nil {
-			snap.CapacityError = err.Error()
-			w.note("the provider's capacity could not be read: %v", err)
+			snap.CapacityError = w.why(err)
+			w.note("the provider's capacity could not be read: %s", w.why(err))
 		} else {
 			snap.Capacity = &c
 		}
@@ -152,7 +164,7 @@ func (w *fileWorld) Read() plan.Snapshot {
 
 	resources, err := w.session.Discover(w.ctx)
 	if err != nil && len(resources) == 0 {
-		why := fmt.Sprintf("the provider could not be read: %v", err)
+		why := "the provider could not be read: " + w.why(err)
 		w.note("%s", why)
 		for _, r := range mine {
 			w.unconfirmed(r, why)
@@ -162,7 +174,7 @@ func (w *fileWorld) Read() plan.Snapshot {
 	if err != nil {
 		// Partial is still evidence for what it did list; a machine it did
 		// not list is unconfirmed, below.
-		w.note("the provider's listing is incomplete: %v", err)
+		w.note("the provider's listing is incomplete: %s", w.why(err))
 	}
 	byRef := map[string]provider.Resource{}
 	for _, res := range resources {

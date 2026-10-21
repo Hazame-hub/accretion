@@ -20,7 +20,8 @@ GOWORK=off go run ./cmd/accrete plan -f examples/two-vms.yaml -o json
 PowerShell:
 
 ```powershell
-$env:ACCRETE_PROXMOX_TOKEN = Read-Host 'API token (user@realm!tokenid=secret)'
+$s = Read-Host -AsSecureString 'API token secret'   # typed masked
+$env:ACCRETE_PROXMOX_TOKEN = 'user@realm!tokenid=' + [Net.NetworkCredential]::new('', $s).Password
 $env:GOWORK = 'off'
 go run ./cmd/accrete plan -f examples/two-vms.yaml
 ```
@@ -37,7 +38,8 @@ plus accrete's own `notes`: what it could not read. `-o text` prints one line
 per entry, then errors, warnings, limits, notes and the summary.
 
 Exit status: 0 the plan has no errors, 1 it has errors, 2 accrete could not
-plan (bad flags, a bad manifest or state, no token).
+plan (bad flags, a bad manifest or state, no token, or a token that is not
+user@realm!tokenid=secret, such as the secret alone).
 
 ## The token
 

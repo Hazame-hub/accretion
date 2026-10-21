@@ -267,10 +267,28 @@ func TestARefusedTokenLeavesRecordedMachinesUnknown(t *testing.T) {
 	srv := newPVE(t, webUUID, 4096)
 	p, out, _ := accrete(t, "root@pam!accrete=wrong-"+secretPart+"x", "-f", lab(t, srv.URL, true))
 	web := entry(t, p, "web")
-	if web.Action != plan.ActionUnknown || !strings.Contains(web.Reason, "401") {
+	if web.Action != plan.ActionUnknown || !strings.Contains(web.Reason, "401") || !strings.Contains(web.Reason, "refused the token") {
 		t.Fatalf("web = %+v\n%s", web, out)
 	}
+	if !contains(p.Notes, "refused the token") {
+		t.Errorf("notes = %v", p.Notes)
+	}
 	noWrites(t, srv)
+}
+
+// The secret typed alone, without user@realm!tokenid=, is refused before
+// any call, without being quoted.
+func TestAMalformedTokenCannotPlan(t *testing.T) {
+	srv := newPVE(t, webUUID, 4096)
+	_, out, code := accrete(t, secretPart, "-f", lab(t, srv.URL, false))
+	if code != 2 || !strings.Contains(out, "user@realm!tokenid=secret") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.nonGET) > 0 {
+		t.Fatalf("sent %v", srv.nonGET)
+	}
 }
 
 func TestNoTokenIsAnError(t *testing.T) {

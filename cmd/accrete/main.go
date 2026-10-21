@@ -99,13 +99,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	world := &fileWorld{ctx: ctx, state: state, env: env, blueprints: driver.Blueprints(), now: time.Now}
+	world := &fileWorld{ctx: ctx, state: state, env: env, blueprints: driver.Blueprints(), explain: driver.Explain, now: time.Now}
 	if *offline {
 		world.notAsked = "--offline"
 	} else {
 		token, err := ref.Token(dir, getenv, stderr)
 		if err != nil {
 			return fail("%s: %v", *file, err)
+		}
+		if driver.CheckToken != nil {
+			if err := driver.CheckToken(token); err != nil {
+				return fail("%s: spec.provider: %v", *file, err)
+			}
 		}
 		session, err := driver.Provider.Connect(ctx, provider.Config{
 			Endpoint: ref.Endpoint, Params: map[string]any{"api_token": token}, VerifyTLS: ref.VerifyTLS,
