@@ -31,6 +31,10 @@ type WriteFixture struct {
 	// *OutcomeUnknownError. The suite then retries and expects one machine,
 	// finished.
 	InterruptNextClone func()
+	// LoseNextCloneAnswer makes the next Clone request be carried out and
+	// its answer lost on the way back. The suite then expects the call, or
+	// its retry, to finish that one machine and make no other.
+	LoseNextCloneAnswer func()
 }
 
 // Two identities the suite mints. Fixed, so a failure is reproducible.
@@ -230,8 +234,48 @@ func WriteContract(t *testing.T, p provider.Provider, cfg provider.Config, secre
 	if r := find(t, s, m2.Ref); r == nil || (wc.MintUUID && !sameUUID(r.Identity.SMBIOSUUID, writeUUID2)) {
 		t.Errorf("the resumed clone is %+v, want it at %v carrying %s", r, m2.Ref, writeUUID2)
 	}
+	// A machine in use is not re-stamped, even under its own name and mark.
+	if _, err := w.Power(ctx, provider.Target{Ref: m2.Ref, ExpectUUID: writeUUID2}, provider.PowerRunning); err != nil {
+		t.Fatalf("Power(running) of the resumed clone: %v", err)
+	}
+	restamp := req2
+	restamp.MintUUID = writeUUID1
+	_, err = w.Clone(ctx, restamp)
+	check("Clone over a running machine", err)
+	if err == nil {
+		t.Error("Clone re-stamped a running machine with another identity")
+	}
+	if r := find(t, s, m2.Ref); r == nil || !sameUUID(r.Identity.SMBIOSUUID, writeUUID2) {
+		t.Errorf("after a Clone over a running machine it is %+v, want it still carrying %s", r, writeUUID2)
+	}
 	if _, err := w.Delete(ctx, provider.Target{Ref: m2.Ref, ExpectUUID: writeUUID2}, provider.DeleteOptions{StopFirst: true}); err != nil {
 		t.Errorf("Delete of the resumed clone: %v", err)
+	}
+
+	// A clone whose answer was lost: one machine, finished, whether the call
+	// itself or its retry finishes it.
+	if fx.LoseNextCloneAnswer == nil {
+		t.Fatal("WriteFixture.LoseNextCloneAnswer is required")
+	}
+	req3 := req
+	req3.Name, req3.MintUUID, req3.OwnerMark = "wc-three", writeUUID1, "accrete:write-contract-3"
+	fx.LoseNextCloneAnswer()
+	m3, err := w.Clone(ctx, req3)
+	check("Clone with a lost answer", err)
+	if err != nil {
+		if !errors.As(err, &unknown) {
+			t.Fatalf("Clone with a lost answer: want success or a *provider.OutcomeUnknownError, got %v", err)
+		}
+		if m3, err = w.Clone(ctx, req3); err != nil {
+			t.Fatalf("Clone retried after a lost answer: %v", err)
+		}
+	}
+	if got := count(t, s, "wc-three"); got != 1 {
+		t.Errorf("after a lost clone answer, %d machines are named wc-three, want 1", got)
+	}
+	shaped(t, s, m3.Ref, req3.Shape)
+	if _, err := w.Delete(ctx, provider.Target{Ref: m3.Ref, ExpectUUID: writeUUID1}, provider.DeleteOptions{StopFirst: true}); err != nil {
+		t.Errorf("Delete of the clone whose answer was lost: %v", err)
 	}
 
 	leak(t, secret, "results", fmt.Sprintf("%+v %+v %+v %+v %+v", m, pl, on, gone, m2))

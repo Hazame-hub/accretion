@@ -99,6 +99,9 @@ func (s *session) Clone(_ context.Context, req provider.CloneRequest) (provider.
 		if sameUUID(r.Identity.SMBIOSUUID, req.MintUUID) {
 			return provider.Machine{Ref: r.Ref, Identity: r.Identity}, nil
 		}
+		if r.State != "stopped" {
+			return provider.Machine{}, fmt.Errorf("fake: %q runs as %s; a machine in use is not re-stamped", r.Name, r.Identity.SMBIOSUUID)
+		}
 		// Proven ours by name and mark, never stamped (it carries whatever
 		// identity the clone gave it): finish what the first attempt began.
 		r.Identity.SMBIOSUUID = req.MintUUID
