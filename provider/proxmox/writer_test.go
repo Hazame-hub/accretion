@@ -245,7 +245,7 @@ func TestDeleteRemovesOnlyTheTargetsOwnSeed(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	defaultTaskPoll = 5 * time.Millisecond
+	DefaultTaskPoll = 5 * time.Millisecond
 	os.Exit(m.Run())
 }
 
@@ -270,5 +270,36 @@ func TestPowerRefusesASuspendedGuestAndDeleteIsGuardedBeforeStopping(t *testing.
 	}
 	if after := pve.Writes(); len(after) != before || pve.Guest(100).Status != "running" {
 		t.Errorf("a refused Delete sent %v and left the guest %s", after[before:], pve.Guest(100).Status)
+	}
+}
+
+// A clone onto another node than its template's is refused in v0.1: its
+// config stays on the template's node while it runs, so a lost answer could
+// not be told from an id somebody else took.
+func TestCloneOntoAnotherNodeIsRefused(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	var refused *provider.RefusedError
+	_, err := w.Clone(context.Background(), provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Placement: "pve2",
+		Name: "web-9", MintUUID: mintA, OwnerMark: "accrete:run-j"})
+	if !errors.As(err, &refused) || len(pve.Writes()) != 0 {
+		t.Fatalf("cross-node clone: %v, sent %v", err, pve.Writes())
+	}
+}
+
+// A gateway's answer to a start (pveproxy relaying to another node) is not a
+// known failure: the node may carry on.
+func TestAGatewayAnswerToAPowerCallIsUnknown(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	m, err := w.Clone(context.Background(), provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-10",
+		MintUUID: mintA, OwnerMark: "accrete:run-k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pve.FailNextWith(`^POST /nodes/pve1/qemu/100/status/start$`, 596, 1)
+	var unknown *provider.OutcomeUnknownError
+	if _, err := w.Power(context.Background(), provider.Target{Ref: m.Ref, ExpectUUID: mintA}, provider.PowerRunning); !errors.As(err, &unknown) {
+		t.Fatalf("Power answered 596: want an OutcomeUnknownError, got %v", err)
 	}
 }

@@ -35,9 +35,11 @@ var cpuModel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // unknownAfter wraps an error from a call that may have been carried out: a
 // task that outlived its wait, a request whose answer never came or came too
-// late (a transport error, the per-call timeout, an answer cut off), a task
-// whose status could not be read, or a wait cut short by the caller's
-// context. Anything else is a known outcome (an API refusal, a task
+// late (a transport error, the per-call timeout, an answer cut off), a
+// gateway's answer (above 500: pveproxy relaying to another node answers 595
+// or 596 while pvedaemon may carry on), a task whose status could not be
+// read, or a wait cut short by the caller's context. A 500 is Proxmox's own
+// refusal, and known. Anything else is a known outcome (an API refusal, a task
 // that ran and failed, a guard that said no) and is returned as is.
 func unknownAfter(op string, err error) error {
 	if err == nil {
@@ -46,7 +48,9 @@ func unknownAfter(op string, err error) error {
 	var timeout *TaskTimeoutError
 	var unreadable *TaskUnreadableError
 	var transport *url.Error
+	var api *APIError
 	if errors.As(err, &timeout) || errors.As(err, &unreadable) || errors.As(err, &transport) ||
+		(errors.As(err, &api) && api.Code > 500) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return &provider.OutcomeUnknownError{Op: op, Err: err}
@@ -178,6 +182,12 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 	node := req.Placement
 	if node == "" {
 		node = tnode
+	}
+	// A clone onto another node keeps its config on the template's node
+	// until its task ends, so a lost answer could not be told from an id
+	// somebody else took. v0.1 clones on the template's node only.
+	if node != tnode {
+		return provider.Machine{}, provider.Refused("proxmox: clone %q onto %s from a template on %s: v0.1 clones on the template's node only", req.Name, node, tnode)
 	}
 	if _, err := s.c.readConfig(ctx, tnode, tvmid); err != nil {
 		return provider.Machine{}, fmt.Errorf("proxmox: read template %s/qemu/%s: %w", tnode, tvmid, err)
@@ -349,9 +359,13 @@ func (s *session) findByMark(ctx context.Context, name, mark string) (node, vmid
 		if err == nil && cfg.str("name") == "" && cfg.str("lock") == "clone" {
 			cfg, err = s.c.awaitUnlocked(ctx, g.Node, id)
 		}
-		var gone *APIError
-		if err != nil && g.Name == "" && errors.As(err, &gone) {
-			continue // an unnamed guest that went away meanwhile is not this clone
+		var refused *APIError
+		if err != nil && g.Name == "" && errors.As(err, &refused) {
+			// Unreadable: gone meanwhile is not this clone; still there may
+			// be, and is not skipped.
+			if still, findErr := s.c.FindGuest(ctx, id); findErr == nil && still == nil {
+				continue
+			}
 		}
 		if err != nil {
 			return "", "", fmt.Errorf("proxmox: read %s/qemu/%s to see whether it is this clone: %w", g.Node, id, err)

@@ -259,7 +259,9 @@ func (c *Client) PowerGuest(ctx context.Context, actionType string, p map[string
 		if c.isIn(ctx, node, vmType, vmID, op, want, data) {
 			return PowerOutcome{OK: true, Message: fmt.Sprintf("%s is %s", target, want), Data: data}, nil
 		}
-		return failed(ae.Body)
+		out, ferr := failed(ae.Body)
+		out.Unknown = ae.Code > 500 // a gateway's answer: the node may carry on
+		return out, ferr
 	}
 	if upid, isTask := AsUPID(resp); isTask {
 		data["upid"] = upid
