@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +34,9 @@ var writeCapabilities = provider.WriteCapabilities{
 var cpuModel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // unknownAfter wraps an error from a call that may have been carried out: a
-// task that outlived its wait, or a request whose answer never came (a
-// transport error). Anything else is a known outcome (an API refusal, a task
+// task that outlived its wait, a request whose answer never came or came too
+// late (a transport error, the per-call timeout, an answer cut off), or a
+// wait cut short by the caller's context. Anything else is a known outcome (an API refusal, a task
 // that ran and failed, a guard that said no) and is returned as is.
 func unknownAfter(op string, err error) error {
 	if err == nil {
@@ -41,12 +44,20 @@ func unknownAfter(op string, err error) error {
 	}
 	var timeout *TaskTimeoutError
 	var transport *url.Error
-	if (errors.As(err, &timeout) || errors.As(err, &transport)) &&
-		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if errors.As(err, &timeout) || errors.As(err, &transport) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return &provider.OutcomeUnknownError{Op: op, Err: err}
 	}
 	return err
 }
+
+// unlockWait bounds the wait for a guest's lock: a full clone of a large disk
+// takes minutes, and a lock left by a killed task never goes.
+const unlockWait = 30 * time.Minute
+
+// storageName is a Proxmox storage id.
+var storageName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]*$`)
 
 // guestRef splits a guest ref "node/qemu/vmid". Only qemu guests can be
 // written: a container has no SMBIOS identity to guard on.
@@ -84,6 +95,8 @@ func (c *Client) readConfig(ctx context.Context, node, vmid string) (guestConfig
 // awaitUnlocked reads a guest's config until no task holds it (a clone still
 // copying its disk locks the new guest's config), within ctx.
 func (c *Client) awaitUnlocked(ctx context.Context, node, vmid string) (guestConfig, error) {
+	ctx, cancel := context.WithTimeout(ctx, unlockWait)
+	defer cancel()
 	for {
 		cfg, err := c.readConfig(ctx, node, vmid)
 		if err != nil {
@@ -147,8 +160,8 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 	if provider.UUIDForms(req.MintUUID) == nil {
 		return provider.Machine{}, provider.Refused("proxmox: clone %q: mint UUID %q is not a usable UUID", req.Name, req.MintUUID)
 	}
-	if req.Name == "" || strings.TrimSpace(req.OwnerMark) == "" {
-		return provider.Machine{}, provider.Refused("proxmox: a clone needs a name and an owner mark, so a retry can find its own work")
+	if req.Name == "" || strings.TrimSpace(req.OwnerMark) == "" || strings.TrimSpace(req.OwnerMark) != req.OwnerMark {
+		return provider.Machine{}, provider.Refused("proxmox: a clone needs a name and an owner mark without surrounding spaces, so a retry can find its own work")
 	}
 	if req.Shape.CPU != "" && !cpuModel.MatchString(req.Shape.CPU) {
 		return provider.Machine{}, provider.Refused("proxmox: cpu %q is not a model name", req.Shape.CPU)
@@ -164,8 +177,7 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 	if node == "" {
 		node = tnode
 	}
-	tcfg, err := s.c.readConfig(ctx, tnode, tvmid)
-	if err != nil {
+	if _, err := s.c.readConfig(ctx, tnode, tvmid); err != nil {
 		return provider.Machine{}, fmt.Errorf("proxmox: read template %s/qemu/%s: %w", tnode, tvmid, err)
 	}
 
@@ -192,8 +204,16 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 				vmid, cloned = next, true
 				break
 			}
-			if g, lookErr := s.c.FindGuest(ctx, next); attempt < 2 && lookErr == nil && g != nil && g.Name != req.Name {
-				continue // taken by somebody else in the meantime
+			// Only the API refusing the id means nothing was made: the id
+			// was taken in the meantime, by a guest that is not this
+			// clone's (findByMark found none). A lost or late answer may
+			// have made the clone, and is unknown; the retry finds it by
+			// its mark.
+			var refused *APIError
+			if errors.As(err, &refused) && attempt < 2 {
+				if g, lookErr := s.c.FindGuest(ctx, next); lookErr == nil && g != nil {
+					continue
+				}
 			}
 			return provider.Machine{}, unknownAfter("proxmox: clone "+req.Name, err)
 		}
@@ -216,23 +236,13 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 	if err != nil {
 		return provider.Machine{}, unknownAfter("proxmox: clone "+req.Name, err)
 	}
-	// The identity: written now if the guest still has the template's, or
-	// none (a clone whose identity write was lost); left alone if it is
-	// already the minted one; anything else was changed by somebody else.
-	got := cfg.uuid()
-	stamp := false
-	switch {
-	case SameUUID(got, provider.UUIDForms(req.MintUUID)):
-	case got == "" || SameUUID(got, provider.UUIDForms(tcfg.uuid())):
-		stamp = true
-	default:
-		return provider.Machine{}, provider.Refused(
-			"proxmox: vmid %s (%s) carries SMBIOS UUID %s, neither the minted %s nor its template's; somebody changed it, refusing",
-			vmid, req.Name, got, req.MintUUID)
-	}
+	// The identity: the guest is proven this clone's (made by this call, or
+	// carrying its name and mark), and Proxmox gives every clone a random
+	// SMBIOS UUID, so whatever it carries that is not the minted one is
+	// replaced. The other smbios1 fields are kept.
 	form := url.Values{}
-	if stamp {
-		form.Set("smbios1", "uuid="+strings.ToLower(req.MintUUID))
+	if !SameUUID(cfg.uuid(), provider.UUIDForms(req.MintUUID)) {
+		form.Set("smbios1", withUUID(cfg.str("smbios1"), strings.ToLower(req.MintUUID)))
 	}
 	set := func(key, want string) {
 		if want != "" && cfg.str(key) != want {
@@ -302,39 +312,61 @@ func templateRef(ref provider.Ref, placement string) (node, vmid string, err err
 }
 
 // findByMark finds the guest an earlier Clone made: named name, carrying
-// mark as its description. One config read per guest with that name.
+// mark as its description. One config read per guest with that name, and per
+// guest the listing names no one yet: a clone in progress has only a
+// temporary config (lock: clone, no name), and the listing names a new guest
+// only once pvestatd reports it. Such a guest is waited for until its lock
+// goes, then read.
 func (s *session) findByMark(ctx context.Context, name, mark string) (node, vmid string, err error) {
 	var guests []ClusterGuest
 	if err := s.c.Get(ctx, "/cluster/resources?type=vm", &guests); err != nil {
 		return "", "", fmt.Errorf("proxmox: list guests to find %q: %w", name, err)
 	}
 	for _, g := range guests {
-		if g.Name != name || g.Type != "qemu" {
+		if (g.Name != name && g.Name != "") || g.Type != "qemu" {
 			continue
 		}
 		id := strconv.Itoa(g.VMID)
 		cfg, err := s.c.readConfig(ctx, g.Node, id)
+		if err == nil && cfg.str("name") == "" && cfg.str("lock") == "clone" {
+			cfg, err = s.c.awaitUnlocked(ctx, g.Node, id)
+		}
 		if err != nil {
 			return "", "", fmt.Errorf("proxmox: read %s/qemu/%s to see whether it is this clone: %w", g.Node, id, err)
 		}
-		if strings.TrimSpace(cfg.str("description")) == mark {
+		if cfg.str("name") == name && strings.TrimSpace(cfg.str("description")) == mark {
 			return g.Node, id, nil
 		}
 	}
 	return "", "", nil
 }
 
-// sameNIC compares two net lines ignoring the MAC Proxmox adds to a model
-// given without one ("virtio,bridge=vmbr0" is "virtio=BC:…,bridge=vmbr0").
-func sameNIC(have, want string) bool {
-	norm := func(s string) string {
-		parts := strings.Split(s, ",")
-		if len(parts) > 0 {
-			parts[0] = strings.SplitN(parts[0], "=", 2)[0]
+// withUUID is an smbios1 line with its uuid field set, every other field
+// kept.
+func withUUID(line, uuid string) string {
+	out := []string{"uuid=" + uuid}
+	for _, f := range strings.Split(line, ",") {
+		if f != "" && !strings.HasPrefix(f, "uuid=") {
+			out = append(out, f)
 		}
-		return strings.Join(parts, ",")
 	}
-	return norm(have) == norm(want)
+	return strings.Join(out, ",")
+}
+
+// sameNIC compares two net lines in any option order, ignoring the MAC
+// Proxmox adds to a model given without one ("virtio,bridge=vmbr0" is
+// "virtio=BC:…,bridge=vmbr0"). A MAC that want gives is compared.
+func sameNIC(have, want string) bool {
+	split := func(s string) (model, mac string, opts []string) {
+		parts := strings.Split(s, ",")
+		model, mac, _ = strings.Cut(parts[0], "=")
+		opts = append([]string{}, parts[1:]...)
+		sort.Strings(opts)
+		return model, strings.ToUpper(mac), opts
+	}
+	hm, hmac, ho := split(have)
+	wm, wmac, wo := split(want)
+	return hm == wm && (wmac == "" || hmac == wmac) && strings.Join(ho, ",") == strings.Join(wo, ",")
 }
 
 // growDisk grows the boot disk to at least gb GiB. Never shrinks.
@@ -398,11 +430,10 @@ func (s *session) GuestInit(ctx context.Context, m provider.Target, seed provide
 	if absent {
 		return provider.Placement{}, provider.Refused("proxmox: nothing at %s", m.Ref.ID)
 	}
-	name := "accrete-" + strings.ToLower(seed.InstanceID) + ".iso"
-	if seed.Storage == "" || seed.InstanceID == "" || !PlainFilename.MatchString(name) || !nodeName.MatchString(seed.Storage) {
+	name, volume := seedVolume(seed.Storage, seed.InstanceID)
+	if seed.Storage == "" || seed.InstanceID == "" || !PlainFilename.MatchString(name) || !storageName.MatchString(seed.Storage) {
 		return provider.Placement{}, provider.Refused("proxmox: a seed needs a storage and an instance id that make a plain filename")
 	}
-	volume := seed.Storage + ":iso/" + name
 	pl := provider.Placement{Drive: "ide2", Volume: volume, Storage: seed.Storage, Node: node}
 
 	var content []struct {
@@ -445,6 +476,13 @@ func (s *session) GuestInit(ctx context.Context, m provider.Target, seed provide
 	return pl, nil
 }
 
+// seedVolume is the file a seed is kept as, and its volume id: a function of
+// the instance id, so a retry and a removal name the same seed.
+func seedVolume(storage, instanceID string) (name, volume string) {
+	name = "accrete-" + strings.ToLower(instanceID) + ".iso"
+	return name, storage + ":iso/" + name
+}
+
 // Power implements provider.Writer. See openspec accretion-apply, D5.
 func (s *session) Power(ctx context.Context, m provider.Target, want provider.PowerState) (provider.PowerResult, error) {
 	action := map[provider.PowerState]string{provider.PowerRunning: "vm_start", provider.PowerStopped: "vm_shutdown"}[want]
@@ -481,6 +519,12 @@ func (s *session) Power(ctx context.Context, m provider.Target, want provider.Po
 
 // Delete implements provider.Writer. See openspec accretion-apply, D6.
 func (s *session) Delete(ctx context.Context, m provider.Target, opts provider.DeleteOptions) (provider.Deleted, error) {
+	// Only this machine's own seed is removed with it.
+	for _, p := range opts.RemovePlacements {
+		if _, own := seedVolume(p.Storage, m.ExpectUUID); p.Volume != own || p.Node == "" || !storageName.MatchString(p.Storage) {
+			return provider.Deleted{}, provider.Refused("proxmox: %q is not the seed of the machine minted %s; refusing to remove it", p.Volume, m.ExpectUUID)
+		}
+	}
 	node, vmid, _, absent, err := s.guard(ctx, m)
 	if err != nil {
 		return provider.Deleted{}, err
@@ -500,12 +544,16 @@ func (s *session) Delete(ctx context.Context, m provider.Target, opts provider.D
 				return provider.Deleted{}, unknownAfter("proxmox: stop "+m.Ref.ID, err)
 			}
 			if !stop.OK {
+				if timedOut, _ := stop.Data["timed_out"].(bool); timedOut {
+					return provider.Deleted{}, &provider.OutcomeUnknownError{Op: "proxmox: stop " + m.Ref.ID, Err: errors.New(stop.Message)}
+				}
 				return provider.Deleted{}, fmt.Errorf("proxmox: stop %s before deleting it: %s", m.Ref.ID, stop.Message)
 			}
 			// The guards again: the guest was stopped under them, and is
-			// deleted under them.
+			// deleted under them. A refusal now is not "nothing was sent":
+			// the stop was.
 			if _, _, _, absent, err = s.guard(ctx, m); err != nil {
-				return provider.Deleted{}, err
+				return provider.Deleted{}, fmt.Errorf("proxmox: %s was stopped, and no longer passes the guards for its deletion: %v", m.Ref.ID, err)
 			}
 		}
 		if !absent {

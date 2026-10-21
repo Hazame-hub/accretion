@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hazame-hub/accretion/provider"
 	"github.com/hazame-hub/accretion/provider/providertest"
@@ -103,18 +105,110 @@ func TestCloneRefusesAGuestItDidNotMake(t *testing.T) {
 	if !errors.As(err, &refused) {
 		t.Fatalf("Clone onto somebody's vmid: want a RefusedError, got %v", err)
 	}
-	// Found by mark, but carrying another identity than its template's:
-	// somebody changed it, and it is not re-stamped.
-	if _, err := w.Clone(context.Background(), provider.CloneRequest{
-		Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-2", MintUUID: mintA, OwnerMark: "accrete:run-c"}); err != nil {
+}
+
+// Proxmox gives every clone a random SMBIOS UUID. A clone whose identity
+// write was lost is found by its name and mark and stamped, keeping the
+// other smbios1 fields.
+func TestAnInterruptedCloneIsStampedOverItsOwnUUID(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	req := provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-2", MintUUID: mintA, OwnerMark: "accrete:run-c"}
+	pve.CutNext(`^POST /nodes/pve1/qemu/\d+/config$`)
+	var unknown *provider.OutcomeUnknownError
+	if _, err := w.Clone(context.Background(), req); !errors.As(err, &unknown) {
+		t.Fatalf("interrupted Clone: want an OutcomeUnknownError, got %v", err)
+	}
+	if got := pve.Guest(100).Config["smbios1"]; got != "uuid="+pvetest.CloneUUID(100) {
+		t.Fatalf("after the interruption the clone carries %v, want its own random UUID", got)
+	}
+	pve.SetConfig(100, "smbios1", "uuid="+pvetest.CloneUUID(100)+",manufacturer=QWNjcmV0ZQ==,base64=1")
+	m, err := w.Clone(context.Background(), req)
+	if err != nil || !m.Applied || m.Ref.ID != "pve1/qemu/100" {
+		t.Fatalf("resumed Clone = %+v, %v", m, err)
+	}
+	if got := pve.Guest(100).Config["smbios1"]; got != "uuid="+mintA+",manufacturer=QWNjcmV0ZQ==,base64=1" {
+		t.Errorf("stamped smbios1 = %v, want the minted UUID and the other fields kept", got)
+	}
+	if n := pve.Named("web-2"); len(n) != 1 {
+		t.Errorf("guests named web-2: %v, want one", n)
+	}
+}
+
+// A clone whose answer is lost made its guest. The verb says the outcome is
+// unknown rather than trying another id, and the retry finds the guest by
+// its mark while the listing does not name it yet.
+func TestALostCloneAnswerNeverMakesASecondGuest(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	req := provider.CloneRequest{Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-4", MintUUID: mintA, OwnerMark: "accrete:run-e",
+		Shape: provider.Shape{Cores: 4}}
+	pve.DropNext(`^POST /nodes/pve1/qemu/9000/clone$`)
+	var unknown *provider.OutcomeUnknownError
+	if _, err := w.Clone(context.Background(), req); !errors.As(err, &unknown) {
+		t.Fatalf("Clone with a lost answer: want an OutcomeUnknownError, got %v", err)
+	}
+	if n := pve.Named("web-4"); len(n) != 1 {
+		t.Fatalf("after a lost answer, guests named web-4: %v, want the one clone", n)
+	}
+	m, err := w.Clone(context.Background(), req)
+	if err != nil || m.Ref.ID != "pve1/qemu/100" {
+		t.Fatalf("retried Clone = %+v, %v", m, err)
+	}
+	if n := pve.Named("web-4"); len(n) != 1 {
+		t.Errorf("after the retry, guests named web-4: %v, want one", n)
+	}
+	if g := pve.Guest(100); g.Config["smbios1"] != "uuid="+mintA || g.Config["cores"] != "4" {
+		t.Errorf("the found clone was not finished: %v", g.Config)
+	}
+}
+
+// An answer that comes after the call gave up is a lost answer: the start
+// was carried out, and the caller is told the outcome is unknown.
+func TestALateAnswerIsAnUnknownOutcome(t *testing.T) {
+	pve := pvetest.New(t)
+	c, err := NewClient(pve.URL, pvetest.Token, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	pve.SetConfig(100, "smbios1", "uuid=99999999-8888-4777-8666-555555555555")
-	_, err = w.Clone(context.Background(), provider.CloneRequest{
-		Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-2", MintUUID: mintA, OwnerMark: "accrete:run-c"})
-	if !errors.As(err, &refused) {
-		t.Fatalf("Clone over a changed identity: want a RefusedError, got %v", err)
+	c.CallTimeout = 200 * time.Millisecond
+	w := NewSession(c).(provider.Writer)
+	m, err := w.Clone(context.Background(), provider.CloneRequest{
+		Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-5", MintUUID: mintA, OwnerMark: "accrete:run-f"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	pve.DelayNext(`^POST /nodes/pve1/qemu/100/status/start$`, time.Second)
+	var unknown *provider.OutcomeUnknownError
+	if _, err := w.Power(context.Background(), provider.Target{Ref: m.Ref, ExpectUUID: mintA}, provider.PowerRunning); !errors.As(err, &unknown) {
+		t.Fatalf("Power with a late answer: want an OutcomeUnknownError, got %v", err)
+	}
+	if pve.Guest(100).Status != "running" {
+		t.Fatal("the start was not carried out; the test proves nothing")
+	}
+}
+
+// A seed that is not the target's own is never removed with it.
+func TestDeleteRemovesOnlyTheTargetsOwnSeed(t *testing.T) {
+	pve := pvetest.New(t)
+	w := writerOn(t, pve)
+	m, err := w.Clone(context.Background(), provider.CloneRequest{
+		Template: provider.Ref{ID: "pve1/qemu/9000"}, Name: "web-6", MintUUID: mintA, OwnerMark: "accrete:run-g"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(pve.Writes())
+	var refused *provider.RefusedError
+	_, err = w.Delete(context.Background(), provider.Target{Ref: m.Ref, ExpectUUID: mintA}, provider.DeleteOptions{
+		RemovePlacements: []provider.Placement{{Volume: "local:iso/rocky-9.iso", Storage: "local", Node: "pve1"}}})
+	if !errors.As(err, &refused) || len(pve.Writes()) != before {
+		t.Errorf("Delete removing another file: %v, sent %v", err, pve.Writes()[before:])
+	}
+}
+
+func TestMain(m *testing.M) {
+	defaultTaskPoll = 5 * time.Millisecond
+	os.Exit(m.Run())
 }
 
 func TestPowerRefusesASuspendedGuestAndDeleteIsGuardedBeforeStopping(t *testing.T) {

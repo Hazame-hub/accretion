@@ -1,10 +1,12 @@
 // Package pvetest is an in-memory Proxmox VE API for tests: one node, pve1,
 // that answers the reads Accretion's discovery, capacity and SDN make and the
 // writes its Writer sends, and remembers what those writes changed. A clone
-// adds a guest with the template's config, a config POST sets keys, a power
-// call changes the status, a delete removes the guest, an upload puts a file
-// on a storage. Every mutation answers with a task that has already stopped
-// well.
+// adds a guest with the template's config and, as Proxmox does, a fresh
+// SMBIOS UUID of its own; for its first few reads the new guest is still
+// being cloned (its config is only "lock: clone", and the listing does not
+// name it yet). A config POST sets keys, a power call changes the status, a
+// delete removes the guest, an upload puts a file on a storage. Every
+// mutation answers with a task that has already stopped well.
 //
 // It is not a Proxmox: it answers what Accretion asks and 501s the rest, so
 // a test that strays off the map fails loudly instead of passing against an
@@ -25,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Token is the token the server accepts, and Secret its secret half, which a
@@ -34,9 +37,17 @@ const (
 	Token  = "accrete@pve!test=" + Secret
 )
 
-// TemplateUUID is the SMBIOS UUID the shipped template carries, which every
-// clone inherits until it is stamped with its own.
+// TemplateUUID is the SMBIOS UUID the shipped template carries. A clone does
+// not inherit it: it gets CloneUUID(vmid), as Proxmox gives every clone a
+// random one.
 const TemplateUUID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+
+// CloneUUID is the SMBIOS UUID a clone at vmid is born with.
+func CloneUUID(vmid int) string { return fmt.Sprintf("c10e0000-0000-4000-8000-%012d", vmid) }
+
+// cloningReads is how many reads of a new guest (its config, or a listing)
+// see it still being cloned.
+const cloningReads = 3
 
 // Guest is one guest of the cluster.
 type Guest struct {
@@ -45,6 +56,18 @@ type Guest struct {
 	Status   string // running | stopped | paused
 	Template bool
 	Config   map[string]any
+	// cloning counts the reads that still see the guest being cloned.
+	cloning int
+}
+
+// seen is one read of the guest; it reports whether the clone is still
+// running for this read.
+func (g *Guest) seen() bool {
+	if g.cloning > 0 {
+		g.cloning--
+		return true
+	}
+	return false
 }
 
 // Server is the cluster.
@@ -64,12 +87,16 @@ type Server struct {
 	// connection after the request is carried out and before the answer is
 	// written: the change happens, the caller never hears of it.
 	dropNext *regexp.Regexp
+	// delayNext, when it matches "METHOD /path" of a request, carries the
+	// request out and holds its answer back for delay: a late answer.
+	delayNext *regexp.Regexp
+	delay     time.Duration
 	// refuseToken answers every request 401.
 	refuseToken bool
 }
 
 // New starts a cluster holding template 9000 (rocky-9-cloud, stopped, with a
-// cloud-init drive and a 10G disk) and guest 101 (db-01, stopped, someone
+// cloud-init drive and a 10G disk) and guest 101 (db-01, running, someone
 // else's).
 func New(t testing.TB) *Server {
 	t.Helper()
@@ -80,7 +107,7 @@ func New(t testing.TB) *Server {
 			"scsi0": "local-lvm:base-9000-disk-0,size=10G", "boot": "order=scsi0",
 			"ide2": "local-lvm:vm-9000-cloudinit,media=cdrom", "agent": "1",
 		}},
-		101: {VMID: 101, Kind: "qemu", Status: "stopped", Config: map[string]any{
+		101: {VMID: 101, Kind: "qemu", Status: "running", Config: map[string]any{
 			"name": "db-01", "smbios1": "uuid=6f2c9a10-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
 			"net0": "virtio=BC:24:11:AA:BB:02,bridge=vmbr0", "cores": 1, "memory": 2048,
 			"scsi0": "local-lvm:vm-101-disk-0,size=16G",
@@ -97,6 +124,14 @@ func (s *Server) DropNext(pattern string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dropNext = regexp.MustCompile(pattern)
+}
+
+// DelayNext makes the next request whose "METHOD /path" matches pattern
+// happen at once and answer only after d.
+func (s *Server) DelayNext(pattern string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delayNext, s.delay = regexp.MustCompile(pattern), d
 }
 
 // CutNext makes the next request whose "METHOD /path" matches pattern fail
@@ -180,9 +215,20 @@ var (
 )
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
+	// The answer is written into the response's buffer, which goes out when
+	// serve returns: a delay here holds a finished request's answer back.
+	if d := s.serveLocked(w, r); d > 0 {
+		time.Sleep(d)
+	}
+}
+
+func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := strings.TrimPrefix(r.URL.Path, "/api2/json")
+	if s.delayNext != nil && s.delayNext.MatchString(r.Method+" "+p) {
+		s.delayNext, delay = nil, s.delay
+	}
 	rec := r.Method + " " + p
 	if r.URL.RawQuery != "" {
 		rec += "?" + r.URL.RawQuery
@@ -230,8 +276,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	drop := s.dropNext != nil && s.dropNext.MatchString(r.Method+" "+p)
 	if drop {
 		s.dropNext = nil
+		raw := w
 		defer func() {
-			if hj, ok := w.(http.Hijacker); ok {
+			if hj, ok := raw.(http.Hijacker); ok {
 				if conn, _, err := hj.Hijack(); err == nil {
 					_ = conn.Close()
 				}
@@ -253,7 +300,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			if g.Kind != kind {
 				continue
 			}
-			row := map[string]any{"vmid": g.VMID, "name": g.Config["name"], "status": g.Status,
+			name := g.Config["name"]
+			if g.seen() {
+				name = nil
+			}
+			row := map[string]any{"vmid": g.VMID, "name": name, "status": g.Status,
 				"maxmem": memBytes(g), "cpus": g.Config["cores"]}
 			if g.Template {
 				row["template"] = 1
@@ -264,7 +315,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && p == "/cluster/resources":
 		rows := []map[string]any{}
 		for _, g := range s.sorted() {
-			rows = append(rows, map[string]any{"vmid": g.VMID, "name": g.Config["name"], "node": "pve1", "type": g.Kind,
+			name := g.Config["name"]
+			if g.seen() {
+				name = nil
+			}
+			rows = append(rows, map[string]any{"vmid": g.VMID, "name": name, "node": "pve1", "type": g.Kind,
 				"status": g.Status, "template": boolInt(g.Template), "id": fmt.Sprintf("%s/%d", g.Kind, g.VMID)})
 		}
 		data(rows)
@@ -293,6 +348,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		fail(http.StatusNotImplemented, "pvetest: "+rec+" is not simulated")
 	}
+	return delay
 }
 
 func (s *Server) storage(method string, m []string, form url.Values, data func(any), fail func(int, string), task func()) {
@@ -342,6 +398,10 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 	}
 	switch {
 	case r.Method == http.MethodGet && rest == "/config":
+		if g.seen() {
+			data(map[string]any{"lock": "clone", "digest": "0"})
+			return
+		}
 		data(g.Config)
 	case r.Method == http.MethodGet && rest == "/status/current":
 		data(map[string]any{"status": statusOf(g), "qmpstatus": g.Status, "maxmem": memBytes(g)})
@@ -367,7 +427,8 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 		cfg["description"] = form.Get("description")
 		cfg["scsi0"] = strings.Replace(fmt.Sprint(g.Config["scsi0"]), fmt.Sprintf("base-%d-disk-0", g.VMID), fmt.Sprintf("vm-%d-disk-0", newid), 1)
 		cfg["net0"] = fmt.Sprintf("virtio=BC:24:11:00:%02X:%02X,bridge=vmbr0", newid/256, newid%256)
-		s.Guests[newid] = &Guest{VMID: newid, Kind: "qemu", Status: "stopped", Config: cfg}
+		cfg["smbios1"] = "uuid=" + CloneUUID(newid)
+		s.Guests[newid] = &Guest{VMID: newid, Kind: "qemu", Status: "stopped", Config: cfg, cloning: cloningReads}
 		task()
 	case r.Method == http.MethodPost && rest == "/config":
 		for k := range form {

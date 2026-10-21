@@ -46,6 +46,10 @@ type Client struct {
 // TaskWait, whose every poll is again a plain call.
 const DefaultCallTimeout = 15 * time.Second
 
+// defaultTaskPoll is a new client's TaskPoll. A variable so this package's
+// tests can poll the in-memory cluster quickly.
+var defaultTaskPoll = 2 * time.Second
+
 // NewClient validates a connection and builds its client. It does not dial.
 //
 // verifyTLS false skips certificate verification, which is what a node still
@@ -70,7 +74,7 @@ func NewClient(baseURL, apiToken string, verifyTLS bool) (*Client, error) {
 		BaseURL:  strings.TrimRight(baseURL, "/"),
 		Token:    NormaliseToken(apiToken),
 		HTTP:     httpClient,
-		TaskPoll: 2 * time.Second,
+		TaskPoll: defaultTaskPoll,
 	}, nil
 }
 
