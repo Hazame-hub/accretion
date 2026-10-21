@@ -65,10 +65,11 @@ func lockState(statePath string, note func(string)) (*stateLock, error) {
 			return nil, err
 		}
 		if moved, err := os.ReadFile(aside); err != nil || string(moved) != string(old) {
-			// Somebody else's fresh lock was moved: put it back and stop. A
-			// link, not a rename, so a lock a third run made meanwhile is
-			// never overwritten; then the moved one is left aside, named.
-			if err := os.Link(aside, path); err != nil {
+			// Somebody else's fresh lock was moved: put it back and stop.
+			// Created exclusively, not renamed, so a lock a third run made
+			// meanwhile is never overwritten (on any filesystem); then the
+			// moved one is left aside, named.
+			if err := putBack(path, moved); err != nil {
 				return nil, fmt.Errorf("%s changed while it was being taken over, and could not be put back (%v); another accrete is starting on this state, and its lock is now %s", path, err, aside)
 			}
 			os.Remove(aside)
@@ -78,6 +79,17 @@ func lockState(statePath string, note func(string)) (*stateLock, error) {
 		note(fmt.Sprintf("took over %s, left by pid %d on this host, which is no longer running", path, held.PID))
 	}
 	return nil, fmt.Errorf("%s: could not take the lock", path)
+}
+
+// putBack recreates a lock that was moved aside by mistake, never replacing
+// one that exists.
+func putBack(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(content)
+	return errors.Join(werr, f.Close())
 }
 
 func (l *stateLock) release() { os.Remove(l.path) }

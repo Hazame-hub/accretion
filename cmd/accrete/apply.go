@@ -132,8 +132,9 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 			// The provider lists nothing at the ref, but it leaves out guests
 			// the token may not see, so this is no proof the machine is gone.
 			notDone = append(notDone, fmt.Sprintf("%s %s: %s; if it was removed, run again with --forget-gone to retire its record", e.Action, name, e.Reason))
-		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.cmd == "destroy":
-			// Not confirmed: left alone, and destroy has not removed it.
+		case e.Action == plan.ActionUnknown && e.RealizationID != nil:
+			// Not confirmed: left alone, so it is not what was asked for
+			// (apply) or not removed (destroy).
 			notDone = append(notDone, fmt.Sprintf("%s %s: %s", e.Action, name, e.Reason))
 		case e.Action == plan.ActionChange, e.Action == plan.ActionDelete:
 			why := e.Blocked
@@ -523,7 +524,8 @@ func (a *applier) power(e plan.Entry) error {
 func (a *applier) abandon(run uuid.UUID) error {
 	r := a.record(run)
 	resources, err := a.session.Discover(a.ctx)
-	if err != nil && len(resources) == 0 {
+	if err != nil && (len(resources) == 0 || r.ResourceRefID != "") {
+		// A partial listing proves nothing about a guest it does not list.
 		return fmt.Errorf("read the provider: %w", err)
 	}
 	if r.ResourceRefID == "" {
@@ -570,6 +572,10 @@ func (a *applier) abandon(run uuid.UUID) error {
 		a.printf("  deleted %s\n", found.Ref.ID)
 	case named != nil:
 		return fmt.Errorf("%s may be the half-built machine, but it does not carry its identity %s yet; run accrete apply to finish it, or remove it by hand", named.Ref.ID, r.MintedUUID)
+	case r.ResourceRefID != "" && !a.forgetGone:
+		// The provider leaves out guests the token cannot see, so an empty
+		// ref is no proof the half-built machine is gone.
+		return fmt.Errorf("nothing is listed at %s; if it was removed, run again with --forget-gone to drop its record", r.ResourceRefID)
 	case r.ResourceRefID != "":
 		// Gone from its ref: only the seed may be left.
 		var seeds []provider.Placement

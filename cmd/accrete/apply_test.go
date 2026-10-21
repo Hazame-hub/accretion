@@ -352,6 +352,46 @@ func TestDestroyHandlesHalfBuiltMachines(t *testing.T) {
 	}
 }
 
+// A half-built machine whose guest is no longer listed keeps its record:
+// the token may just not see it. --forget-gone drops it.
+func TestDestroyKeepsAHalfBuiltRecordWhoseGuestIsNotListed(t *testing.T) {
+	l := newApplyLab(t, "")
+	l.pve.CutNext(`^POST /nodes/pve1/qemu/100/status/start$`)
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 1 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	if s := l.loadState(); len(s.Applying) != 1 || s.Applying[0].ResourceRefID == "" {
+		t.Fatalf("applying: %+v", s.Applying)
+	}
+	delete(l.pve.Guests, 100)
+	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 1 || !strings.Contains(out, "run again with --forget-gone") || len(l.loadState().Applying) != 1 {
+		t.Fatalf("destroy: exit %d, applying %d\n%s", code, len(l.loadState().Applying), out)
+	}
+	out, code = l.accrete("", "destroy", "--auto-approve", "--forget-gone")
+	if code != 0 || !strings.Contains(out, "record dropped") || len(l.loadState().Applying) != 0 {
+		t.Fatalf("destroy --forget-gone: exit %d\n%s", code, out)
+	}
+}
+
+// A declared machine the provider does not confirm is not what the
+// manifest asks for: apply leaves it alone, says so, and exits 1.
+func TestApplyReportsADeclaredMachineItCannotConfirm(t *testing.T) {
+	l := newApplyLab(t, "")
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	delete(l.pve.Guests, 100)
+	n := len(l.pve.Writes())
+	out, code := l.accrete("", "apply", "--auto-approve")
+	if code != 1 || !strings.Contains(out, "not done: unknown web/") {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	if w := l.pve.Writes()[n:]; len(w) != 0 {
+		t.Errorf("apply sent %v", w)
+	}
+}
+
 func TestApplyPowersAMachineAsDeclared(t *testing.T) {
 	l := newApplyLab(t, "")
 	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
