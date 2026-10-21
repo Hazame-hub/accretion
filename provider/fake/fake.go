@@ -1,5 +1,6 @@
 // Package fake is the third provider: an in-memory estate that implements
-// provider.Provider in four methods and nothing else.
+// provider.Provider in four methods, and provider.Writer (writer.go) for the
+// write contract.
 //
 // The Fake proves the acceptance criterion — a third implementation compiles
 // against the interface and nothing else in the codebase changes. It cannot
@@ -50,6 +51,11 @@ type Fake struct {
 	// LastConfig is the Config the most recent Connect received, so a test
 	// can assert a credential arrived resolved and was not echoed anywhere.
 	LastConfig provider.Config
+
+	// write is the write half's state (writer.go); interruptClone is set by
+	// InterruptNextClone.
+	write          *writeState
+	interruptClone bool
 }
 
 // New returns a Fake with a small, plausible estate: one host, two VMs with
@@ -64,6 +70,8 @@ func New() *Fake {
 			PowerState: true,
 			Templates:  true,
 			Memory:     true,
+			Write: provider.WriteCapabilities{Clone: true, GuestInit: true, Power: true, Delete: true,
+				MintUUID: true, OwnerMark: true, GracefulShutdown: true, GrowDisk: true},
 		},
 		Estate: []provider.Resource{
 			{Ref: provider.Ref{Kind: provider.KindHost, ID: "node1"}, Name: "node1", State: "running",

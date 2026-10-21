@@ -68,4 +68,6 @@ type Capabilities struct {
 	// Memory: Resource.Memory.CurrentBytes is reported, so the memory
 	// comparison can run against the current effective allocation.
 	Memory bool `json:"memory"`
+	// Write is what the session's Writer can do; all false when it has none.
+	Write WriteCapabilities `json:"write"`
 }

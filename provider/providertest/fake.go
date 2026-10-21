@@ -16,8 +16,8 @@ package providertest
 
 import "github.com/hazame-hub/accretion/provider/fake"
 
-// Fake is an in-memory estate that implements provider.Provider and nothing
-// else. See internal/provider/fake.
+// Fake is an in-memory estate that implements provider.Provider and
+// provider.Writer. See accretion/provider/fake.
 type Fake = fake.Fake
 
 // New returns a Fake with a small, plausible estate: one host, two VMs with
