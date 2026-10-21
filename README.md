@@ -48,8 +48,12 @@ You need:
    - on the node: `Sys.Audit`;
    - on the bridge (Proxmox VE 8 and 9): `SDN.Use`.
 
-   No built-in role covers all of these; make one with exactly this list.
-   A token that misses one is refused with the privilege and path named.
+   Optional: `VM.GuestAgent.Audit` (Proxmox VE 9) or `VM.Monitor` (VE 8) on
+   the machines lets `plan` show the guest agent's hostname and addresses;
+   without it they are left out, and nothing else changes.
+
+   No built-in role covers all of these; make one with this list. A token
+   that misses one is refused with the privilege and path named.
 2. Put the token in an environment variable. It is never written into the
    manifest or the state:
 
@@ -117,9 +121,12 @@ apply and destroy): how long the whole command may run.
 - **change** that is a power difference: power the machine on or off.
 - **any other change:** not done. It is reported and the exit status is 1.
 - **unknown:** a machine an earlier apply left half-built is finished (or,
-  if the manifest no longer declares it, removed). A recorded machine the
-  provider does not list any more keeps its record unless `--forget-gone`
-  (see below). Any other unknown line is never touched.
+  if the manifest no longer declares it, removed). A machine the manifest no
+  longer declares (or that destroy is removing) and that the provider does
+  not list any more keeps its record unless `--forget-gone` (see below). Any
+  other unknown line is never touched, is reported as not done, and the exit
+  status is 1. That includes a declared machine removed by hand: v0.1
+  neither rebuilds it nor forgets it.
 
 **Exit status:**
 - **0:** done, or nothing to do.
@@ -143,11 +150,13 @@ a lost connection leaves a record of where that machine stood.
 - **Unconfirmed machines:** destroy never touches a machine the provider does
   not confirm, for example a guest at its VMID that no longer carries its
   identity. Such a machine stays recorded and destroy exits 1.
-- **Machines already gone:** a recorded machine the provider no longer lists
-  (removed by hand, or by a delete whose answer was lost) also stays recorded,
-  and the run exits 1. Proxmox leaves out guests the token cannot see, so an
-  empty VMID is no proof the machine is gone. Once you have checked that it
-  is, run the same command with `--forget-gone` to retire its record.
+- **Machines already gone:** a machine to delete (no longer declared, or
+  being destroyed) that the provider no longer lists (removed by hand, or by
+  a delete whose answer was lost) also stays recorded, and the run exits 1.
+  So does a half-built machine whose guest is no longer listed. Proxmox
+  leaves out guests the token cannot see, so an empty VMID is no proof the
+  machine is gone. Once you have checked that it is, run the same command
+  with `--forget-gone` to retire its record.
 - **Lock:** a `<state>.lock` file stops two runs on one state. A lock left by a
   crashed run on the same host is taken over. Any other lock is reported and
   never removed for you.
