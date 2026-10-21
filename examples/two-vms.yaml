@@ -1,0 +1,31 @@
+# Two Proxmox VMs, planned by accrete with no Sybil behind it:
+#
+#   ACCRETE_PROXMOX_TOKEN='user@realm!tokenid=secret' \
+#     go run ./cmd/accrete plan -f examples/two-vms.yaml
+#
+# Set endpoint, and the node and template below, to your cluster's. The
+# token is never written here: token_env names the variable that holds it.
+apiVersion: accretion/v1alpha1
+kind: Environment
+metadata:
+  name: two-vms
+spec:
+  provider:
+    type: proxmox
+    endpoint: https://pve.example.invalid:8006
+    # A homelab's self-signed certificate; keep true when it is trusted.
+    verify_tls: false
+    token_env: ACCRETE_PROXMOX_TOKEN
+  variables:
+    node: pve
+    template: "9000"
+  resources:
+    - name: web
+      count: 2
+      blueprint: provision-proxmox-vm
+      inputs:
+        pve_node: "{{var.node}}"
+        template_vmid: "{{var.template}}"
+        hostname: "accrete-web-{{instance.number}}"
+        cores: 2
+        memory_mb: 2048
