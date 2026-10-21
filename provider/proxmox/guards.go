@@ -203,6 +203,8 @@ type ClusterGuest struct {
 	Type     string `json:"type"`
 	Status   string `json:"status"`
 	Template int    `json:"template"`
+	// Pool is the resource pool the guest belongs to, empty when none.
+	Pool string `json:"pool"`
 }
 
 // FindGuest looks a VMID up across the whole cluster, or returns nil when no
