@@ -126,6 +126,11 @@ a lost connection leaves a record of where that machine stood.
 - **destroy:** it removes a half-built machine once that machine carries its
   identity. If nothing was built, it drops the record. A clone that was never
   stamped is left in place, with a message saying to finish it with apply.
+- **Unconfirmed machines:** destroy never touches a machine the provider does
+  not confirm, for example a guest at its VMID that no longer carries its
+  identity. Such a machine stays recorded and destroy exits 1. A recorded
+  machine that is already gone, removed by hand or by a delete whose answer
+  was lost, has its record retired.
 - **Lock:** a `<state>.lock` file stops two runs on one state. A lock left by a
   crashed run on the same host is taken over. Any other lock is reported and
   never removed for you.
