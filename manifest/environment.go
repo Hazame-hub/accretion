@@ -46,10 +46,11 @@ const (
 )
 
 // Environment is a validated, normalized manifest. Anything DecodeEnvironment
-// returns satisfies Validate — Name and Spec.Integration are non-empty, every
-// resource has a name unique within the environment and a blueprint, and every
-// Count is between 0 and MaxResourceCount — so a consumer of a decoded value
-// does not re-validate.
+// or DecodeStandalone returns satisfies Validate — Name is non-empty, exactly
+// one of Spec.Integration and Spec.Provider is set, every resource has a name
+// unique within the environment and a blueprint, and every Count is between 0
+// and MaxResourceCount — so a consumer of a decoded value does not
+// re-validate.
 //
 // An Environment may declare nothing at all, and a resource may have count 0.
 // Both mean "none of these should exist": the plan lists every machine built
@@ -67,8 +68,12 @@ type Environment struct {
 
 // EnvironmentSpec is the body of the manifest.
 type EnvironmentSpec struct {
-	// Integration names the connector the machines are provisioned through.
+	// Integration names the connector the machines are provisioned through,
+	// in a sybil/v1alpha1 manifest.
 	Integration string
+	// Provider is what an accretion/v1alpha1 manifest builds through, in
+	// Integration's place. Exactly one of the two is set.
+	Provider *ProviderRef
 	// Group optionally names an asset group the results should join. It is
 	// optional because an environment is useful before anyone has decided how
 	// to organize what it produces.
@@ -452,7 +457,15 @@ func (e Environment) Validate() error {
 	if strings.TrimSpace(e.Name) == "" {
 		return fmt.Errorf("%s: %w", KindEnvironment, ErrMissingName)
 	}
-	if strings.TrimSpace(e.Spec.Integration) == "" {
+	switch {
+	case e.Spec.Provider != nil:
+		if strings.TrimSpace(e.Spec.Integration) != "" {
+			return fmt.Errorf("%s %q: spec.integration and spec.provider are both set; a manifest names one", KindEnvironment, e.Name)
+		}
+		if err := e.Spec.Provider.Validate(); err != nil {
+			return fmt.Errorf("%s %q: spec.provider: %w", KindEnvironment, e.Name, err)
+		}
+	case strings.TrimSpace(e.Spec.Integration) == "":
 		return fmt.Errorf("%s %q: spec.integration is required", KindEnvironment, e.Name)
 	}
 	for k, v := range e.Spec.Variables {
@@ -627,6 +640,9 @@ func EncodeEnvironment(env Environment) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("%s %q: %w", KindEnvironment, env.Name, err)
 	}
+	if env.Spec.Provider != nil {
+		return encodeStandalone(env, spec)
+	}
 	return Document{
 		APIVersion: EnvironmentV1Alpha1,
 		Kind:       KindEnvironment,
@@ -644,7 +660,12 @@ func EncodeEnvironment(env Environment) (Document, error) {
 // it. Blueprints are de-duplicated because ten resources built from one
 // blueprint are one dependency, not ten.
 func (e Environment) References() []Reference {
-	refs := []Reference{{Kind: RefIntegration, Name: e.Spec.Integration}}
+	var refs []Reference
+	// A standalone manifest names a provider, which is not something to
+	// resolve by name.
+	if e.Spec.Provider == nil {
+		refs = append(refs, Reference{Kind: RefIntegration, Name: e.Spec.Integration})
+	}
 	if e.Spec.Group != "" {
 		refs = append(refs, Reference{Kind: RefGroup, Name: e.Spec.Group})
 	}
@@ -677,7 +698,12 @@ func (e Environment) Total() int {
 // to join, fill in or attach — and Sybil never removes a network, so dropping
 // one from the manifest changes nothing on the provider.
 func (e Environment) Emptied() Environment {
-	return Environment{Name: e.Name, Spec: EnvironmentSpec{Integration: e.Spec.Integration}}
+	out := Environment{Name: e.Name, Spec: EnvironmentSpec{Integration: e.Spec.Integration}}
+	if e.Spec.Provider != nil {
+		p := *e.Spec.Provider
+		out.Spec.Provider = &p
+	}
+	return out
 }
 
 // Declares reports whether the manifest asks for anything at all: a machine

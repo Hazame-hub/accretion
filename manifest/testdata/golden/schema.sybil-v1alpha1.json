@@ -1,0 +1,410 @@
+{
+  "$id": "https://sybil.dev/schemas/environment.sybil-v1alpha1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "sybil/v1alpha1"
+    },
+    "kind": {
+      "const": "Environment"
+    },
+    "metadata": {
+      "properties": {
+        "name": {
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "spec": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "description": "An asset group the machines join once accepted.",
+          "type": "string"
+        },
+        "integration": {
+          "description": "The connector's name in Sybil.",
+          "type": "string"
+        },
+        "networks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "dhcp": {
+                "default": false,
+                "description": "Needs dnsmasq on every node.",
+                "type": "boolean"
+              },
+              "dhcp_range": {
+                "description": "START-END; defaults to the upper half of the subnet.",
+                "type": "string"
+              },
+              "dns": {
+                "description": "Name servers for machines with a fixed address.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "gateway": {
+                "description": "Defaults to the subnet's first address.",
+                "type": "string"
+              },
+              "name": {
+                "description": "1-8 lowercase letters and digits: it becomes an interface name.",
+                "pattern": "^[a-z][a-z0-9]{0,7}$",
+                "type": "string"
+              },
+              "snat": {
+                "default": true,
+                "description": "Outbound access through the node.",
+                "type": "boolean"
+              },
+              "static_range": {
+                "description": "START-END the addresses of `ip: static` come from.",
+                "type": "string"
+              },
+              "subnet": {
+                "description": "A canonical CIDR, e.g. 10.20.0.0/24.",
+                "type": "string"
+              },
+              "zone": {
+                "default": "sybil",
+                "pattern": "^[a-z][a-z0-9]{0,7}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "subnet"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "resources": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "blueprint": {
+                "description": "The id of the connector's blueprint that builds it, as its provider lists it.",
+                "type": "string"
+              },
+              "count": {
+                "default": 1,
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "firewall": {
+                "additionalProperties": false,
+                "description": "The hypervisor's firewall for each machine, below the guest. The rules are the whole list: one removed here is removed from the machine. Leave the block out to leave the firewall alone.",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "description": "The guest's firewall switch. The cluster's must be on too, or nothing is filtered.",
+                    "type": "boolean"
+                  },
+                  "policy_in": {
+                    "default": "DROP",
+                    "enum": [
+                      "ACCEPT",
+                      "DROP",
+                      "REJECT"
+                    ],
+                    "type": "string"
+                  },
+                  "policy_out": {
+                    "default": "ACCEPT",
+                    "enum": [
+                      "ACCEPT",
+                      "DROP",
+                      "REJECT"
+                    ],
+                    "type": "string"
+                  },
+                  "rules": {
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "Evaluated in order, first match wins. Either group:, or a rule with an action.",
+                      "properties": {
+                        "action": {
+                          "enum": [
+                            "ACCEPT",
+                            "DROP",
+                            "REJECT"
+                          ],
+                          "type": "string"
+                        },
+                        "comment": {
+                          "description": "One line.",
+                          "type": "string"
+                        },
+                        "dest": {
+                          "description": "Same forms as source.",
+                          "type": "string"
+                        },
+                        "direction": {
+                          "default": "in",
+                          "enum": [
+                            "in",
+                            "out"
+                          ],
+                          "type": "string"
+                        },
+                        "dport": {
+                          "description": "A port, a range such as 8000:8080, or a list. Needs proto tcp or udp.",
+                          "type": "string"
+                        },
+                        "group": {
+                          "description": "A security group defined on the cluster, applied in this rule's place.",
+                          "type": "string"
+                        },
+                        "macro": {
+                          "description": "A named service such as SSH, HTTP or HTTPS, in place of proto and ports.",
+                          "type": "string"
+                        },
+                        "proto": {
+                          "description": "tcp, udp, icmp…",
+                          "type": "string"
+                        },
+                        "source": {
+                          "description": "An address, CIDR, range, +ipset or alias; a comma-separated list of them.",
+                          "type": "string"
+                        },
+                        "sport": {
+                          "description": "Same forms as dport.",
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              "image": {
+                "description": "A template by name, optionally @sha256:\u003cdigest\u003e.",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(@sha256:[0-9a-f]{64})?$",
+                "type": "string"
+              },
+              "inputs": {
+                "description": "The blueprint's inputs. Strings may use {{instance.number}} and {{instance.index}}.",
+                "properties": {
+                  "bootstrap": {
+                    "additionalProperties": false,
+                    "description": "First-boot setup, after Sybil's own enrollment. No password field on purpose; reference secrets as {{secret.name}}.",
+                    "properties": {
+                      "files": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "content": {
+                              "type": "string"
+                            },
+                            "owner": {
+                              "description": "user or user:group",
+                              "type": "string"
+                            },
+                            "path": {
+                              "description": "A clean absolute path.",
+                              "type": "string"
+                            },
+                            "permissions": {
+                              "pattern": "^0?[0-7]{3}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "path",
+                            "content"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "packages": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "run": {
+                        "items": {
+                          "description": "A shell command, run once after Sybil's agent is installed.",
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "timezone": {
+                        "description": "e.g. Europe/Paris",
+                        "type": "string"
+                      },
+                      "users": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "name": {
+                              "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+                              "type": "string"
+                            },
+                            "shell": {
+                              "description": "An absolute path, e.g. /bin/bash.",
+                              "type": "string"
+                            },
+                            "ssh_keys": {
+                              "items": {
+                                "description": "A public key: ssh-ed25519 AAAA… comment",
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "sudo": {
+                              "description": "Passwordless sudo.",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "ip": {
+                "default": "dhcp",
+                "enum": [
+                  "dhcp",
+                  "static"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+                "type": "string"
+              },
+              "network": {
+                "description": "One of spec.networks, or a bridge that already exists.",
+                "type": "string"
+              },
+              "nics": {
+                "description": "Several network cards, first one first; instead of network and ip. Only the first carries the default route and name servers.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "ip": {
+                      "default": "dhcp",
+                      "enum": [
+                        "dhcp",
+                        "static"
+                      ],
+                      "type": "string"
+                    },
+                    "network": {
+                      "description": "One of spec.networks, or a bridge that already exists.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "network"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 4,
+                "minItems": 1,
+                "type": "array"
+              },
+              "placement": {
+                "additionalProperties": false,
+                "description": "Where the machines may run. With it, Sybil chooses the node (the one with the most free memory) and the blueprint's node input is left out of inputs.",
+                "properties": {
+                  "apart_from": {
+                    "description": "Resources whose machines never share a node with these.",
+                    "items": {
+                      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "node": {
+                    "default": "auto",
+                    "description": "auto, or one node's name.",
+                    "type": "string"
+                  },
+                  "nodes": {
+                    "description": "The only nodes auto may choose.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "spread": {
+                    "default": false,
+                    "description": "Every instance on its own node.",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "power": {
+                "default": "on",
+                "description": "Whether the machines should be running.",
+                "enum": [
+                  "on",
+                  "off"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "blueprint"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "variables": {
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "description": "Values used as {{var.name}} in inputs and images. A string that is only a reference takes the value's type.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "integration"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "title": "Sybil Environment (sybil/v1alpha1)",
+  "type": "object"
+}

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "valid",
+    "yaml": "apiVersion: sybil/v1alpha1\nkind: Environment\nmetadata:\n  name: staging\nspec:\n  integration: lab\n  group: web\n  variables:\n    size: 2048\n  networks:\n    - name: appnet\n      zone: lab\n      subnet: 10.20.0.0/24\n      gateway: 10.20.0.1\n      snat: true\n      dhcp: false\n  resources:\n    - name: web\n      count: 2\n      blueprint: provision-vm\n      network: appnet\n      inputs:\n        hostname: web-{{instance.number}}\n        memory_mb: '{{var.size}}'\n"
+  },
+  {
+    "name": "no_api_version",
+    "error": "Environment \"staging\": apiVersion is required and must be sybil/v1alpha1"
+  },
+  {
+    "name": "future_api_version",
+    "error": "Environment \"staging\": unsupported apiVersion \"sybil/v1\", want sybil/v1alpha1"
+  },
+  {
+    "name": "standalone_api_version",
+    "error": "Environment \"staging\": unsupported apiVersion \"accretion/v1alpha1\", want sybil/v1alpha1"
+  },
+  {
+    "name": "wrong_kind",
+    "error": "\"staging\": expected kind Environment, got \"Runbook\""
+  },
+  {
+    "name": "no_integration",
+    "error": "Environment \"staging\": spec.integration is required"
+  },
+  {
+    "name": "blank_integration",
+    "error": "Environment \"staging\": spec.integration is required"
+  },
+  {
+    "name": "provider_key",
+    "error": "Environment \"staging\": yaml: unmarshal errors:\n  line 1: field provider not found in type manifest.environmentSpecWire"
+  },
+  {
+    "name": "misspelled_key",
+    "error": "Environment \"staging\": yaml: unmarshal errors:\n  line 2: field groop not found in type manifest.environmentSpecWire"
+  },
+  {
+    "name": "no_blueprint",
+    "error": "Environment \"staging\": resource \"web\" has no blueprint"
+  },
+  {
+    "name": "negative_count",
+    "error": "Environment \"staging\": resource \"web\" has count -1, want 0 or more"
+  },
+  {
+    "name": "huge_count",
+    "error": "Environment \"staging\": resource \"web\" has count 5000, want at most 1000"
+  },
+  {
+    "name": "bad_variable",
+    "error": "Environment \"staging\": variable \"9size\" must be letters, digits and _, starting with a letter or _"
+  },
+  {
+    "name": "bad_network_name",
+    "error": "Environment \"staging\": spec.networks[0]: network name \"App-Net\" must be 1-8 lowercase letters and digits, starting with a letter (Proxmox uses it as an interface name)"
+  },
+  {
+    "name": "bad_subnet",
+    "error": "Environment \"staging\": spec.networks[0]: network \"appnet\": subnet \"10.20.0.1/24\" has host bits set; the subnet is 10.20.0.0/24"
+  },
+  {
+    "name": "unknown_network",
+    "yaml": "apiVersion: sybil/v1alpha1\nkind: Environment\nmetadata:\n  name: staging\nspec:\n  integration: lab\n  group: web\n  variables:\n    size: 2048\n  networks:\n    - name: appnet\n      zone: lab\n      subnet: 10.20.0.0/24\n      gateway: 10.20.0.1\n      snat: true\n      dhcp: false\n  resources:\n    - name: web\n      count: 2\n      blueprint: provision-vm\n      network: other-net\n      inputs:\n        hostname: web-{{instance.number}}\n        memory_mb: '{{var.size}}'\n"
+  },
+  {
+    "name": "bad_image",
+    "error": "Environment \"staging\": resource \"web\" has image \"bad image\"; want a name, optionally @sha256:\u003c64 hex digits\u003e"
+  },
+  {
+    "name": "bad_power",
+    "error": "Environment \"staging\": resource \"web\" has power \"sometimes\"; want on or off"
+  }
+]

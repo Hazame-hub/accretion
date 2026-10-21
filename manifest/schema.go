@@ -165,3 +165,36 @@ func EnvironmentJSONSchema() map[string]any {
 		},
 	}
 }
+
+// StandaloneJSONSchema is the schema of an accretion/v1alpha1 manifest:
+// EnvironmentJSONSchema with spec.provider in spec.integration's place.
+// Built from it, so the two shapes describe the same resources.
+func StandaloneJSONSchema() map[string]any {
+	s := EnvironmentJSONSchema()
+	s["$id"] = "https://sybil.dev/schemas/environment.accretion-v1alpha1.json"
+	s["title"] = "Accretion Environment (accretion/v1alpha1)"
+	props := s["properties"].(map[string]any)
+	props["apiVersion"] = map[string]any{"const": EnvironmentStandaloneV1Alpha1}
+	spec := props["spec"].(map[string]any)
+	spec["required"] = []string{"provider"}
+	specProps := spec["properties"].(map[string]any)
+	delete(specProps, "integration")
+	specProps["provider"] = map[string]any{
+		"type":                 "object",
+		"description":          "What builds the machines. The token is never written here: name the file or the environment variable that holds it.",
+		"additionalProperties": false,
+		"required":             []string{"type", "endpoint"},
+		"oneOf": []any{
+			map[string]any{"required": []string{"token_file"}},
+			map[string]any{"required": []string{"token_env"}},
+		},
+		"properties": map[string]any{
+			"type":       map[string]any{"type": "string", "pattern": providerTypePattern.String(), "description": "The provider's registered name."},
+			"endpoint":   map[string]any{"type": "string", "pattern": "^https://", "description": "The provider's API, e.g. https://host:8006."},
+			"verify_tls": map[string]any{"type": "boolean", "default": true, "description": "Check the endpoint's certificate."},
+			"token_file": map[string]any{"type": "string", "description": "A file holding the token, relative to this manifest. Keep it mode 0600."},
+			"token_env":  map[string]any{"type": "string", "pattern": envVarPattern.String(), "description": "An environment variable holding the token."},
+		},
+	}
+	return s
+}

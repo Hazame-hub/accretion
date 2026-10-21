@@ -6,6 +6,43 @@
 // configuration bundles (apiVersion, kind, metadata.name, spec), so a
 // manifest can travel in one of those, but nothing here knows about that
 // bundle format's other kinds or its registry.
+//
+// An Environment comes in two shapes, which differ only in what builds the
+// machines. Sybil's names one of its connectors and is decoded by
+// DecodeEnvironment:
+//
+//	apiVersion: sybil/v1alpha1
+//	kind: Environment
+//	metadata:
+//	  name: two-vms
+//	spec:
+//	  integration: lab
+//	  resources:
+//	    - name: web
+//	      count: 2
+//	      blueprint: provision-vm
+//
+// Accretion's own, planned with no Sybil behind it, names the provider and
+// where its token is kept, never the token, and is decoded by
+// DecodeStandalone:
+//
+//	apiVersion: accretion/v1alpha1
+//	kind: Environment
+//	metadata:
+//	  name: two-vms
+//	spec:
+//	  provider:
+//	    type: <provider>
+//	    endpoint: https://pve.example:8006
+//	    verify_tls: true
+//	    token_env: ACCRETE_TOKEN    # or token_file: ./provider.token
+//	  resources:
+//	    - name: web
+//	      count: 2
+//	      blueprint: provision-vm
+//
+// Each decoder refuses the other's apiVersion. EnvironmentJSONSchema and
+// StandaloneJSONSchema describe the two shapes.
 package manifest
 
 import (
