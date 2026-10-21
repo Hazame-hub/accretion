@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/hazame-hub/accretion/provider"
 )
@@ -68,8 +69,8 @@ func (s *session) Clone(_ context.Context, req provider.CloneRequest) (provider.
 	if provider.UUIDForms(req.MintUUID) == nil {
 		return provider.Machine{}, provider.Refused("fake: clone %q: mint_uuid %q is not a usable UUID", req.Name, req.MintUUID)
 	}
-	if req.Name == "" || req.OwnerMark == "" {
-		return provider.Machine{}, provider.Refused("fake: clone needs a name and an owner mark")
+	if req.Name == "" || req.OwnerMark == "" || strings.TrimSpace(req.OwnerMark) != req.OwnerMark {
+		return provider.Machine{}, provider.Refused("fake: clone needs a name and an owner mark without surrounding spaces")
 	}
 	ti := f.find(req.Template)
 	if ti < 0 || f.Estate[ti].Ref.Kind != provider.KindTemplate {
@@ -95,17 +96,14 @@ func (s *session) Clone(_ context.Context, req provider.CloneRequest) (provider.
 	}
 	if at >= 0 {
 		r := &f.Estate[at]
-		switch got := r.Identity.SMBIOSUUID; {
-		case sameUUID(got, req.MintUUID):
+		if sameUUID(r.Identity.SMBIOSUUID, req.MintUUID) {
 			return provider.Machine{Ref: r.Ref, Identity: r.Identity}, nil
-		case got == "" || got == tmpl.Identity.SMBIOSUUID:
-			// Cloned, never stamped: finish what the first attempt began.
-			r.Identity.SMBIOSUUID = req.MintUUID
-			shape(r, req.Shape)
-			return provider.Machine{Ref: r.Ref, Identity: r.Identity, Applied: true}, nil
-		default:
-			return provider.Machine{}, provider.Refused("fake: %q carries SMBIOS UUID %s, not %s; someone changed it", r.Name, got, req.MintUUID)
 		}
+		// Proven ours by name and mark, never stamped (it carries whatever
+		// identity the clone gave it): finish what the first attempt began.
+		r.Identity.SMBIOSUUID = req.MintUUID
+		shape(r, req.Shape)
+		return provider.Machine{Ref: r.Ref, Identity: r.Identity, Applied: true}, nil
 	}
 
 	id := req.ID
@@ -134,6 +132,9 @@ func (s *session) Clone(_ context.Context, req provider.CloneRequest) (provider.
 	}
 	ws.marks[r.Ref] = req.OwnerMark
 	if f.interruptClone {
+		// Like a real clone, the machine is born with an identity of its own
+		// (Proxmox gives every clone a random SMBIOS UUID), not the minted one.
+		r.Identity.SMBIOSUUID = fmt.Sprintf("0c10e000-0000-4000-8000-%012s", id)
 		f.interruptClone = false
 		f.Estate = append(f.Estate, r)
 		return provider.Machine{}, &provider.OutcomeUnknownError{Op: "fake: clone " + req.Name, Err: errors.New("answer lost")}
@@ -258,6 +259,11 @@ func (s *session) Delete(_ context.Context, m provider.Target, opts provider.Del
 		return provider.Deleted{}, err
 	}
 	ws := f.ws()
+	for _, p := range opts.RemovePlacements {
+		if p.Volume != p.Storage+":iso/accrete-"+m.ExpectUUID+".iso" {
+			return provider.Deleted{}, provider.Refused("fake: %s is not the seed of the machine minted %s", p.Volume, m.ExpectUUID)
+		}
+	}
 	if !absent {
 		if f.Estate[i].State != "stopped" {
 			if !opts.StopFirst {

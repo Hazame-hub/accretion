@@ -20,15 +20,16 @@ type WriteFixture struct {
 	Placement string
 	// SeedStorage is a storage that takes seeds.
 	SeedStorage string
-	// Foreign is a stopped guest the suite did not make, and ForeignUUID the
+	// Foreign is a running guest the suite did not make, and ForeignUUID the
 	// SMBIOS UUID it carries. Every verb aimed at it under another identity
-	// must be refused.
+	// must be refused, and leave it running with its identity.
 	Foreign     provider.Ref
 	ForeignUUID string
 	// InterruptNextClone makes the next Clone lose its answer after the
-	// machine exists and before its identity is written, so the caller sees
-	// an *OutcomeUnknownError. The suite then retries and expects one
-	// machine, finished.
+	// machine exists (with whatever identity cloning gives it) and before the
+	// minted identity is written, so the caller sees an
+	// *OutcomeUnknownError. The suite then retries and expects one machine,
+	// finished.
 	InterruptNextClone func()
 }
 
@@ -109,6 +110,7 @@ func WriteContract(t *testing.T, p provider.Provider, cfg provider.Config, secre
 	} else if wc.MintUUID && !sameUUID(r.Identity.SMBIOSUUID, writeUUID1) {
 		t.Errorf("Discover: the clone carries %q, want %s", r.Identity.SMBIOSUUID, writeUUID1)
 	}
+	shaped(t, s, m.Ref, req.Shape)
 
 	// Idempotent retry: the same request finds the same machine.
 	again, err := w.Clone(ctx, req)
@@ -172,6 +174,17 @@ func WriteContract(t *testing.T, p provider.Provider, cfg provider.Config, secre
 	refused("Delete of a guest that does not carry the identity", err)
 	if r := find(t, s, fx.Foreign); r == nil {
 		t.Fatal("a refused Delete removed a guest that was not the suite's")
+	} else if r.State != "running" || !sameUUID(r.Identity.SMBIOSUUID, fx.ForeignUUID) {
+		t.Errorf("a refused Delete(StopFirst) touched a guest that was not the suite's: %s carrying %q", r.State, r.Identity.SMBIOSUUID)
+	}
+	// A placement that is not this machine's seed is not removed.
+	other := pl
+	other.Volume = strings.Replace(pl.Volume, strings.ToLower(writeUUID1), strings.ToLower(writeUUID2), 1)
+	other.Volume = strings.Replace(other.Volume, writeUUID1, writeUUID2, 1)
+	_, err = w.Delete(ctx, target, provider.DeleteOptions{StopFirst: true, RemovePlacements: []provider.Placement{other}})
+	refused("Delete removing a seed that is not the machine's", err)
+	if r := find(t, s, m.Ref); r == nil || r.State != "running" {
+		t.Fatalf("a refused Delete changed the machine: %+v", r)
 	}
 
 	// Delete, then delete again.
@@ -207,6 +220,10 @@ func WriteContract(t *testing.T, p provider.Provider, cfg provider.Config, secre
 	if err != nil {
 		t.Fatalf("resumed Clone: %v", err)
 	}
+	if !m2.Applied {
+		t.Error("resumed Clone: Applied is false, but it had to write the identity")
+	}
+	shaped(t, s, m2.Ref, req2.Shape)
 	if got := count(t, s, "wc-two"); got != 1 {
 		t.Errorf("after an interrupted and resumed Clone, %d machines are named wc-two, want 1", got)
 	}
@@ -218,6 +235,21 @@ func WriteContract(t *testing.T, p provider.Provider, cfg provider.Config, secre
 	}
 
 	leak(t, secret, "results", fmt.Sprintf("%+v %+v %+v %+v %+v", m, pl, on, gone, m2))
+}
+
+// shaped checks the machine reports the cores and memory it was cloned with.
+func shaped(t *testing.T, s provider.Session, ref provider.Ref, want provider.Shape) {
+	t.Helper()
+	r := find(t, s, ref)
+	if r == nil {
+		t.Fatalf("Discover does not list %v", ref)
+	}
+	if want.Cores > 0 && int(r.Facts.CPUCores) != want.Cores {
+		t.Errorf("%v has %d cores, want the %d it was cloned with", ref, r.Facts.CPUCores, want.Cores)
+	}
+	if want.MemoryMB > 0 && r.Facts.RAMBytes != int64(want.MemoryMB)<<20 {
+		t.Errorf("%v has %d bytes of memory, want the %d MiB it was cloned with", ref, r.Facts.RAMBytes, want.MemoryMB)
+	}
 }
 
 func count(t *testing.T, s provider.Session, name string) int {
