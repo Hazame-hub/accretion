@@ -2,14 +2,20 @@
 
 package main
 
-import "os"
+import (
+	"errors"
+	"os"
+	"syscall"
+)
 
 // processAlive reports whether a process with this pid is running here. On
-// Windows, FindProcess opens the process and fails when there is none.
+// Windows, FindProcess opens the process: no such process is
+// ERROR_INVALID_PARAMETER, and any other failure (access denied to another
+// user's or an elevated process) means it exists.
 func processAlive(pid int) bool {
 	p, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		return !errors.Is(err, syscall.Errno(87))
 	}
 	p.Release()
 	return true

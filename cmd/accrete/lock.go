@@ -31,7 +31,7 @@ func lockState(statePath string, note func(string)) (*stateLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
 			_, werr := f.Write(raw)
@@ -42,7 +42,7 @@ func lockState(statePath string, note func(string)) (*stateLock, error) {
 			}
 			return l, nil
 		}
-		if !errors.Is(err, fs.ErrExist) || attempt > 0 {
+		if !errors.Is(err, fs.ErrExist) || attempt == 2 {
 			return nil, err
 		}
 		var held stateLock
@@ -54,10 +54,23 @@ func lockState(statePath string, note func(string)) (*stateLock, error) {
 			return nil, fmt.Errorf("%s is held by pid %d on %s since %s; another accrete is running on this state. Remove the file only once you are sure it is not",
 				path, held.PID, held.Host, held.Started.Format(time.RFC3339))
 		}
-		note(fmt.Sprintf("took over %s, left by pid %d on this host, which is no longer running", path, held.PID))
-		if err := os.Remove(path); err != nil {
+		// Moved aside rather than removed: of two runs taking over the same
+		// stale lock, only one rename succeeds, and the other then finds the
+		// winner's fresh lock instead of deleting it.
+		aside := fmt.Sprintf("%s.stale-%d", path, os.Getpid())
+		if err := os.Rename(path, aside); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			return nil, err
 		}
+		if moved, err := os.ReadFile(aside); err != nil || string(moved) != string(old) {
+			// Somebody else's fresh lock was moved: put it back and stop.
+			_ = os.Rename(aside, path)
+			return nil, fmt.Errorf("%s changed while it was being taken over; another accrete is starting on this state", path)
+		}
+		os.Remove(aside)
+		note(fmt.Sprintf("took over %s, left by pid %d on this host, which is no longer running", path, held.PID))
 	}
 	return nil, fmt.Errorf("%s: could not take the lock", path)
 }

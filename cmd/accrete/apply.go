@@ -45,7 +45,14 @@ type applier struct {
 	blueprints []plan.Blueprint
 	recipe     func(blueprint string, inputs map[string]any) (provider.Recipe, error)
 	explain    func(error) string
+	// gone are recorded machines the plan would delete and the provider no
+	// longer has: only their record is retired.
+	gone map[uuid.UUID]bool
 }
+
+// errState is a state that could not be written. The run stops on it: what
+// it did next would not be recorded.
+var errState = errors.New("the state could not be written")
 
 // step is one machine's work, decided before anything is asked.
 type step struct {
@@ -117,6 +124,11 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 			steps = append(steps, step{"delete " + name + " (" + e.ResourceRefID + ")", func() error { return a.delete(e) }})
 		case e.Action == plan.ActionChange && e.Apply == plan.ApplyPower:
 			steps = append(steps, step{"power " + e.Power + " " + name, func() error { return a.power(e) }})
+		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.gone[*e.RealizationID]:
+			steps = append(steps, step{"retire " + name + " (" + e.ResourceRefID + " is already gone)", func() error { return a.delete(e) }})
+		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.cmd == "destroy":
+			// Not confirmed: left alone, and destroy has not removed it.
+			notDone = append(notDone, fmt.Sprintf("%s %s: %s", e.Action, name, e.Reason))
 		case e.Action == plan.ActionChange, e.Action == plan.ActionDelete:
 			why := e.Blocked
 			if why == "" {
@@ -169,11 +181,15 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 	}
 
 	failed := 0
-	for _, s := range steps {
+	for i, s := range steps {
 		a.printf("%s\n", s.label)
 		if err := s.do(); err != nil {
 			failed++
 			a.printf("  failed: %s\n", a.describe(err))
+			if errors.Is(err, errState) {
+				a.printf("Stopped: the state could not be written, so nothing more is done; %d actions not started.\n", len(steps)-i-1)
+				return 1
+			}
 		}
 	}
 	a.printf("%s: %d done, %d failed, %d not done.\n", a.cmd, len(steps)-failed, failed, len(notDone))
@@ -242,7 +258,7 @@ func userData(rec provider.Recipe) (string, error) {
 
 func (a *applier) save() error {
 	if err := saveState(a.statePath, a.state); err != nil {
-		return fmt.Errorf("writing the state %s: %w", a.statePath, err)
+		return fmt.Errorf("%w: %s: %v", errState, a.statePath, err)
 	}
 	return nil
 }
@@ -503,6 +519,20 @@ func (a *applier) abandon(run uuid.UUID) error {
 	resources, err := a.session.Discover(a.ctx)
 	if err != nil && len(resources) == 0 {
 		return fmt.Errorf("read the provider: %w", err)
+	}
+	if r.ResourceRefID == "" {
+		// The clone never answered: it may have been made, and may still be
+		// copying, while the provider lists it with no identity yet (a clone
+		// in progress has neither name nor SMBIOS UUID). Then nothing proves
+		// the record can be dropped.
+		if err != nil {
+			return fmt.Errorf("the provider's listing is incomplete (%v), so a clone of %s still in progress could not be ruled out; run accrete destroy again", err, r.Name)
+		}
+		for _, res := range resources {
+			if res.Ref.Kind == provider.KindVM && res.Identity.SMBIOSUUID == "" {
+				return fmt.Errorf("%s has no identity yet, so it may be %s's clone still copying; run accrete apply to finish it, or accrete destroy again once it is done", res.Ref.ID, r.Name)
+			}
+		}
 	}
 	forms := provider.UUIDForms(r.MintedUUID)
 	var found, named *provider.Resource

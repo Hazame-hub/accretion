@@ -54,6 +54,12 @@ type fileWorld struct {
 	// Refused is the first error that was the provider refusing the
 	// credential itself; nil when none was.
 	Refused error
+	// Absent are the recorded machines a complete listing showed nothing at
+	// the ref of. GoneDeletes are those of them whose line confirm turned
+	// from delete to unknown: removed already (a delete whose answer was
+	// lost, or by hand), only their record is left to retire.
+	Absent      map[uuid.UUID]bool
+	GoneDeletes map[uuid.UUID]bool
 }
 
 // inFlight is what the planner sees as being built: the runs an embedder
@@ -205,6 +211,12 @@ func (w *fileWorld) Read() plan.Snapshot {
 		res, found := byRef[r.ResourceRefID]
 		if !found {
 			w.unconfirmed(r, fmt.Sprintf("nothing is at %s on the provider", r.ResourceRefID))
+			if err == nil {
+				if w.Absent == nil {
+					w.Absent = map[uuid.UUID]bool{}
+				}
+				w.Absent[r.ID] = true
+			}
 			continue
 		}
 		// The ref says where to look; the identity says it is still the
@@ -262,6 +274,12 @@ func (w *fileWorld) confirm(p *plan.Plan) {
 			continue
 		}
 		was := e.Action
+		if was == plan.ActionDelete && w.Absent[*e.RealizationID] {
+			if w.GoneDeletes == nil {
+				w.GoneDeletes = map[uuid.UUID]bool{}
+			}
+			w.GoneDeletes[*e.RealizationID] = true
+		}
 		e.Action = plan.ActionUnknown
 		e.Reason = fmt.Sprintf("%s; the record alone says %s", why, was)
 		e.Apply, e.LifecycleBlueprint = "", ""

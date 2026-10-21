@@ -177,6 +177,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		statePath: *statePath, state: state, env: env, session: session,
 		provider: ProviderID(*ref), blueprints: driver.Blueprints(), recipe: driver.Recipe, explain: driver.Explain,
 	}
+	a.gone = world.GoneDeletes
 	return a.run(p, world.Notes)
 }
 

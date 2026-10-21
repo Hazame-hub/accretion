@@ -241,6 +241,44 @@ func TestDestroyRemovesWhatApplyBuilt(t *testing.T) {
 	}
 }
 
+// A delete whose answer was lost leaves the guest gone and the record
+// current. The next destroy sees nothing at the ref under a complete listing
+// and retires the record.
+func TestALostDeleteAnswerIsRetiredByTheNextRun(t *testing.T) {
+	l := newApplyLab(t, "")
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	l.pve.DropNext(`^DELETE /nodes/pve1/qemu/100$`)
+	l.accrete("", "destroy", "--auto-approve")
+	if l.pve.Guest(100) != nil {
+		t.Fatal("the dropped DELETE was not carried out; the test proves nothing")
+	}
+	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 0 || len(current(l.loadState())) != 0 {
+		t.Fatalf("second destroy: exit %d, %d still recorded\n%s", code, len(current(l.loadState())), out)
+	}
+}
+
+// A record whose clone never answered is not dropped while the provider
+// lists a guest that may be that clone, still copying under no name.
+func TestDestroyKeepsARecordWhileItsCloneMayStillBeCopying(t *testing.T) {
+	l := newApplyLab(t, "")
+	l.pve.CutNext(`^POST /nodes/pve1/qemu/9000/clone$`)
+	l.accrete("", "apply", "--auto-approve")
+	if s := l.loadState(); len(s.Applying) != 1 || s.Applying[0].ResourceRefID != "" {
+		t.Fatalf("applying: %+v", s.Applying)
+	}
+	l.pve.Guests[150] = &pvetest.Guest{VMID: 150, Kind: "qemu", Status: "stopped", Config: map[string]any{"lock": "clone"}}
+	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 1 || !strings.Contains(out, "may be accrete-web-1's clone still copying") {
+		t.Fatalf("destroy: exit %d\n%s", code, out)
+	}
+	if s := l.loadState(); len(s.Applying) != 1 {
+		t.Errorf("the record was dropped while a clone may be copying")
+	}
+}
+
 // A machine whose guest no longer carries its identity is unknown in the
 // plan, and destroy leaves it alone while it removes the rest.
 func TestDestroyLeavesAMachineTheProviderDoesNotConfirm(t *testing.T) {
@@ -250,7 +288,9 @@ func TestDestroyLeavesAMachineTheProviderDoesNotConfirm(t *testing.T) {
 	}
 	l.pve.SetConfig(100, "smbios1", "uuid=99999999-8888-4777-8666-555555555555")
 	out, code := l.accrete("", "destroy", "--auto-approve")
-	if code != 0 || !strings.Contains(out, "identity mismatch") || strings.Count(out, "deleted; record retired") != 1 {
+	// Exit 1: a machine is still recorded, and a script must not read the
+	// environment as gone.
+	if code != 1 || !strings.Contains(out, "not done: unknown web/0: identity mismatch") || strings.Count(out, "deleted; record retired") != 1 {
 		t.Fatalf("destroy: exit %d\n%s", code, out)
 	}
 	if l.pve.Guest(100) == nil || l.pve.Guest(102) != nil {
@@ -371,5 +411,27 @@ func TestTheStateRoundTripsWithAnApplyingRecord(t *testing.T) {
 	}
 	if info, _ := os.Stat(l.state); info.Mode().Perm() != 0o600 {
 		t.Errorf("state mode %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// A machine removed by hand: destroy retires its record, and sends no
+// DELETE for it.
+func TestDestroyRetiresAMachineAlreadyGone(t *testing.T) {
+	l := newApplyLab(t, "")
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	delete(l.pve.Guests, 100)
+	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 0 || !strings.Contains(out, "retire web/0 (pve1/qemu/100 is already gone)") || !strings.Contains(out, "already gone; record retired") {
+		t.Fatalf("destroy: exit %d\n%s", code, out)
+	}
+	for _, w := range l.pve.Writes() {
+		if strings.HasPrefix(w, "DELETE /nodes/pve1/qemu/100") {
+			t.Errorf("sent %s for a guest already gone", w)
+		}
+	}
+	if n := len(current(l.loadState())); n != 0 {
+		t.Errorf("%d still recorded", n)
 	}
 }
