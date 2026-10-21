@@ -13,7 +13,7 @@ are shared, and this module never imports Sybil (`boundary_test.go`).
 
 ## Install
 
-You need Go 1.26 or later and a clone of this repository.
+You need Go 1.26.1 or later and a clone of this repository.
 
 ```sh
 cd accretion
@@ -34,14 +34,22 @@ You need:
 - a DHCP server on the bridge.
 
 1. Create an API token. In the Proxmox UI, go to Datacenter → Permissions →
-   API Tokens. The token needs these privileges on `/`, or on the node, the
-   storage and a pool:
-   - `VM.Allocate`, `VM.Clone`, `VM.Config.*`, `VM.PowerMgmt` and `VM.Audit`;
-   - `Datastore.AllocateSpace` and `Datastore.Audit`;
-   - `Sys.Audit`.
+   API Tokens. accrete puts new machines in no pool, so grant these on `/`
+   (or on `/vms`, the template, the storages, the node and the bridge, as
+   Proxmox's permission paths allow):
+   - on the machines (`/vms`): `VM.Allocate`, `VM.Clone`, `VM.Audit`,
+     `VM.PowerMgmt`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`,
+     `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM` and
+     `VM.Config.HWType`;
+   - on the disk storage: `Datastore.Audit` and `Datastore.AllocateSpace`;
+   - on the seed storage (`snippet_storage`): `Datastore.Audit`,
+     `Datastore.AllocateTemplate` (to upload the seed ISO) and
+     `Datastore.Allocate` (to remove it);
+   - on the node: `Sys.Audit`;
+   - on the bridge (Proxmox VE 8 and 9): `SDN.Use`.
 
-   Proxmox's built-in `PVEVMAdmin` role plus `Datastore.AllocateSpace` is
-   enough.
+   No built-in role covers all of these; make one with exactly this list.
+   A token that misses one is refused with the privilege and path named.
 2. Put the token in an environment variable. It is never written into the
    manifest or the state:
 
@@ -97,15 +105,21 @@ It holds no endpoint and no credential.
 | Command | What it does |
 | --- | --- |
 | `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
-| `accrete apply -f env.yaml [--state F] [--auto-approve]` | Prints the plan, asks, then acts on it one machine at a time. |
-| `accrete destroy -f env.yaml [--state F] [--auto-approve]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
+| `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+
+Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
+apply and destroy): how long the whole command may run.
 
 **What apply does with each plan line:**
 - **create:** clone the template, seed cloud-init, start the machine, confirm it, record it.
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **any other change:** not done. It is reported and the exit status is 1.
-- **unknown:** never touched.
+- **unknown:** a machine an earlier apply left half-built is finished (or,
+  if the manifest no longer declares it, removed). A recorded machine the
+  provider does not list any more keeps its record unless `--forget-gone`
+  (see below). Any other unknown line is never touched.
 
 **Exit status:**
 - **0:** done, or nothing to do.
@@ -128,9 +142,12 @@ a lost connection leaves a record of where that machine stood.
   stamped is left in place, with a message saying to finish it with apply.
 - **Unconfirmed machines:** destroy never touches a machine the provider does
   not confirm, for example a guest at its VMID that no longer carries its
-  identity. Such a machine stays recorded and destroy exits 1. A recorded
-  machine that is already gone, removed by hand or by a delete whose answer
-  was lost, has its record retired.
+  identity. Such a machine stays recorded and destroy exits 1.
+- **Machines already gone:** a recorded machine the provider no longer lists
+  (removed by hand, or by a delete whose answer was lost) also stays recorded,
+  and the run exits 1. Proxmox leaves out guests the token cannot see, so an
+  empty VMID is no proof the machine is gone. Once you have checked that it
+  is, run the same command with `--forget-gone` to retire its record.
 - **Lock:** a `<state>.lock` file stops two runs on one state. A lock left by a
   crashed run on the same host is taken over. Any other lock is reported and
   never removed for you.
