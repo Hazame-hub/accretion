@@ -155,7 +155,7 @@ func lab(t *testing.T, endpoint string, built bool) string {
 func accrete(t *testing.T, token string, args ...string) (apiPlan, string, int) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := run(context.Background(), append([]string{"plan", "-o", "json"}, args...), &out, &errOut,
+	code := run(context.Background(), append([]string{"plan", "-o", "json"}, args...), strings.NewReader(""), &out, &errOut,
 		func(k string) string {
 			if k == tokenVar {
 				return token
@@ -263,15 +263,14 @@ func TestAnUnreachableProviderLeavesRecordedMachinesUnknown(t *testing.T) {
 	}
 }
 
-func TestARefusedTokenLeavesRecordedMachinesUnknown(t *testing.T) {
+// A refused token is a configuration error, not a plan whose machines are
+// all unknown: exit 2, with the provider's hint, the secret never quoted.
+// (openspec accretion-apply D10, which changes phase 2's D8.)
+func TestARefusedTokenCannotPlan(t *testing.T) {
 	srv := newPVE(t, webUUID, 4096)
-	p, out, _ := accrete(t, "root@pam!accrete=wrong-"+secretPart+"x", "-f", lab(t, srv.URL, true))
-	web := entry(t, p, "web")
-	if web.Action != plan.ActionUnknown || !strings.Contains(web.Reason, "401") || !strings.Contains(web.Reason, "refused the token") {
-		t.Fatalf("web = %+v\n%s", web, out)
-	}
-	if !contains(p.Notes, "refused the token") {
-		t.Errorf("notes = %v", p.Notes)
+	_, out, code := accrete(t, "root@pam!accrete=wrong-"+secretPart+"x", "-f", lab(t, srv.URL, true))
+	if code != 2 || !strings.Contains(out, "401") || !strings.Contains(out, "refused the token") {
+		t.Fatalf("exit %d, want 2 naming the refusal:\n%s", code, out)
 	}
 	noWrites(t, srv)
 }
@@ -354,7 +353,7 @@ func TestBadInputCannotPlan(t *testing.T) {
 func TestTextOutput(t *testing.T) {
 	srv := newPVE(t, webUUID, 2048)
 	var out bytes.Buffer
-	code := run(context.Background(), []string{"plan", "-f", lab(t, srv.URL, true)}, &out, &out,
+	code := run(context.Background(), []string{"plan", "-f", lab(t, srv.URL, true)}, strings.NewReader(""), &out, &out,
 		func(k string) string {
 			if k == tokenVar {
 				return testToken

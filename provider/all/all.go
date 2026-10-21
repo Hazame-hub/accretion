@@ -22,10 +22,13 @@ type Driver struct {
 	// Explain says what to check for an error the provider answered with,
 	// or "" when the error says it all.
 	Explain func(err error) string
+	// Recipe says how a Writer builds an instance of a blueprint from its
+	// inputs, or why it cannot.
+	Recipe func(blueprint string, inputs map[string]any) (provider.Recipe, error)
 }
 
 var drivers = map[string]Driver{
-	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain},
+	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe},
 }
 
 // Lookup returns the driver for a provider type.

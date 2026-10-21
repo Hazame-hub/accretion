@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -169,6 +170,11 @@ func (e *OutcomeUnknownError) Error() string {
 }
 
 func (e *OutcomeUnknownError) Unwrap() error { return e.Err }
+
+// ErrUnauthorized is what a provider's error matches (errors.Is) when the far
+// side refused the credential itself, as opposed to one privilege or one
+// object. A command stops on it: nothing it reads after is evidence.
+var ErrUnauthorized = errors.New("the provider refused the credential")
 
 // WriteCapabilities is what a session's Writer can do. A session that does
 // not implement Writer reports all false. Like Capabilities, it is branched

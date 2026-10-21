@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -50,14 +51,33 @@ type fileWorld struct {
 	// by realization, with why. Such a machine is never planned as no-op
 	// or change: see confirm.
 	Unconfirmed map[uuid.UUID]string
+	// Refused is the first error that was the provider refusing the
+	// credential itself; nil when none was.
+	Refused error
+}
+
+// inFlight is what the planner sees as being built: the runs an embedder
+// recorded, and the machines accrete itself started building and has not
+// recorded yet, so a half-built machine plans as unknown, never as create.
+func (w *fileWorld) inFlight() []plan.Run {
+	out := append([]plan.Run(nil), w.state.InFlight...)
+	for _, a := range w.state.Applying {
+		intent := a.Intent
+		out = append(out, plan.Run{ID: a.RunID, Status: "running", Intent: &intent, IntentInputs: a.IntentInputs})
+	}
+	return out
 }
 
 func (w *fileWorld) note(format string, args ...any) {
 	w.Notes = append(w.Notes, fmt.Sprintf(format, args...))
 }
 
-// why is err with what the provider says to check for it.
+// why is err with what the provider says to check for it. It also notes a
+// refused credential, which the command stops on (Refused).
 func (w *fileWorld) why(err error) string {
+	if w.Refused == nil && errors.Is(err, provider.ErrUnauthorized) {
+		w.Refused = err
+	}
 	if w.explain != nil {
 		if hint := w.explain(err); hint != "" {
 			return err.Error() + " (" + hint + ")"
@@ -81,7 +101,7 @@ func (w *fileWorld) Read() plan.Snapshot {
 		Blueprints:   w.blueprints,
 		Realizations: w.state.Realizations,
 		Verdicts:     w.state.Verdicts,
-		InFlight:     w.state.InFlight,
+		InFlight:     w.inFlight(),
 	}
 	if snap.Verdicts == nil {
 		snap.Verdicts = map[uuid.UUID]string{}
@@ -227,8 +247,10 @@ func (w *fileWorld) Read() plan.Snapshot {
 // confirm keeps the plan from claiming what the provider did not show. A
 // recorded machine the provider did not confirm (it could not be read,
 // refused the token, has nothing at the ref, or has another guest there) is
-// planned as unknown, never as no-op or change: its record is all there is,
-// and a record is not the machine.
+// planned as unknown, never as no-op, change or delete: its record is all
+// there is, and a record is not the machine. apply and destroy act on what
+// the plan says, so this is also what keeps them off a guest that is not the
+// one recorded.
 func (w *fileWorld) confirm(p *plan.Plan) {
 	for i := range p.Entries {
 		e := &p.Entries[i]
@@ -236,7 +258,7 @@ func (w *fileWorld) confirm(p *plan.Plan) {
 			continue
 		}
 		why, unconfirmed := w.Unconfirmed[*e.RealizationID]
-		if !unconfirmed || (e.Action != plan.ActionNoOp && e.Action != plan.ActionChange) {
+		if !unconfirmed || (e.Action != plan.ActionNoOp && e.Action != plan.ActionChange && e.Action != plan.ActionDelete) {
 			continue
 		}
 		was := e.Action
