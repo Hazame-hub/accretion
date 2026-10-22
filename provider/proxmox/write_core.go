@@ -37,6 +37,10 @@ type PowerOutcome struct {
 	OK      bool
 	Message string
 	Data    map[string]interface{}
+	// Unknown is a failure whose task was not seen to end (its wait ran
+	// out, or its status could not be read): the guest may yet get there.
+	// Not in Data, so an action's answer does not change.
+	Unknown bool
 }
 
 // BoolParam reads a boolean parameter, as a bool or a string strconv can
@@ -255,7 +259,9 @@ func (c *Client) PowerGuest(ctx context.Context, actionType string, p map[string
 		if c.isIn(ctx, node, vmType, vmID, op, want, data) {
 			return PowerOutcome{OK: true, Message: fmt.Sprintf("%s is %s", target, want), Data: data}, nil
 		}
-		return failed(ae.Body)
+		out, ferr := failed(ae.Body)
+		out.Unknown = ae.Code > 500 // a gateway's answer: the node may carry on
+		return out, ferr
 	}
 	if upid, isTask := AsUPID(resp); isTask {
 		data["upid"] = upid
@@ -275,7 +281,10 @@ func (c *Client) PowerGuest(ctx context.Context, actionType string, p map[string
 		if c.isIn(ctx, node, vmType, vmID, op, want, data) {
 			return PowerOutcome{OK: true, Message: fmt.Sprintf("%s is %s", target, want), Data: data}, nil
 		}
-		return failed(err.Error())
+		out, ferr := failed(err.Error())
+		var unreadable *TaskUnreadableError
+		out.Unknown = errors.As(err, &timeout) || errors.As(err, &unreadable)
+		return out, ferr
 	}
 
 	if want == "" {
