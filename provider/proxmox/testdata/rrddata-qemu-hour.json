@@ -1,0 +1,8 @@
+{"data":[
+ {"time":1792648980,"cpu":0.912,"maxcpu":4,"mem":8573157376,"maxmem":8589934592,"netin":10240.5,"netout":2048.25,"diskread":1048576,"diskwrite":524288,"disk":0,"maxdisk":34359738368},
+ {"time":1792648860,"cpu":0.41,"maxcpu":4,"mem":6442450944,"maxmem":8589934592,"netin":9000,"netout":1500,"diskread":0,"diskwrite":4096,"disk":0,"maxdisk":34359738368},
+ {"time":1792648920,"cpu":0.88,"maxcpu":4,"mem":8589934592,"maxmem":8589934592,"netin":12000,"netout":2500,"diskread":2097152,"diskwrite":1048576,"disk":0,"maxdisk":34359738368,"memhost":8600000000,"pressurememorysome":41.2},
+ {"time":1792649040,"maxcpu":4,"maxmem":8589934592,"maxdisk":34359738368},
+ {"time":1792649100,"cpu":null,"mem":"NaN","maxcpu":4,"maxmem":8589934592},
+ {"cpu":0.5}
+]}
