@@ -13,11 +13,14 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,10 +106,47 @@ func (c *Client) callTimeout() time.Duration {
 type APIError struct {
 	Code int
 	Body string
+	// Reason is the HTTP status line without its code. Proxmox puts the
+	// reason for a refusal there, not in the body, which is usually just
+	// {"data":null}: a missing privilege reads
+	// "Permission check failed (/nodes/pve1, Sys.Syslog)".
+	Reason string
 }
 
 func (e *APIError) Error() string {
+	// A reason that is only the standard text for the code says nothing the
+	// code does not, and leaving it out keeps the message every caller and
+	// golden file already knows.
+	if e.Reason != "" && e.Reason != http.StatusText(e.Code) {
+		return fmt.Sprintf("proxmox: API error %d (%s): %s", e.Code, e.Reason, e.Body)
+	}
 	return fmt.Sprintf("proxmox: API error %d: %s", e.Code, e.Body)
+}
+
+// newAPIError reads a refused response into an APIError.
+func newAPIError(resp *http.Response) *APIError {
+	b, _ := io.ReadAll(resp.Body)
+	reason := strings.TrimSpace(strings.TrimPrefix(resp.Status, strconv.Itoa(resp.StatusCode)))
+	return &APIError{Code: resp.StatusCode, Body: strings.TrimSpace(string(b)), Reason: reason}
+}
+
+// permissionCheck is how Proxmox words a refusal for a missing privilege.
+var permissionCheck = regexp.MustCompile(`^Permission check failed \(([^,]+), ([A-Za-z][A-Za-z.]*)\)$`)
+
+// MissingPrivilege reports the ACL path and privilege a 403 names. It answers
+// only for a 403 whose reason is Proxmox's permission-check wording, so a
+// bad token (401), an unreachable node (595) or a 403 with any other reason
+// is never mistaken for one privilege a person could grant.
+func MissingPrivilege(err error) (path, privilege string, ok bool) {
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Code != http.StatusForbidden {
+		return "", "", false
+	}
+	m := permissionCheck.FindStringSubmatch(ae.Reason)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
 }
 
 // Is makes a 401 match provider.ErrUnauthorized.
@@ -149,8 +189,7 @@ func (c *Client) CallEnvelope(ctx context.Context, method, path string, form url
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, "", &APIError{Code: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+		return nil, "", newAPIError(resp)
 	}
 	var wrapper struct {
 		Data    json.RawMessage `json:"data"`
@@ -213,8 +252,7 @@ func (c *Client) StorageUpload(ctx context.Context, node, storage, content, file
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return &APIError{Code: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+		return newAPIError(resp)
 	}
 	var wrapper struct {
 		Data json.RawMessage `json:"data"`
