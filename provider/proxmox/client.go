@@ -20,6 +20,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/hazame-hub/accretion/provider"
 )
 
 // Client is one connection to a Proxmox VE API. Its fields are exported so
@@ -105,6 +107,11 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("proxmox: API error %d: %s", e.Code, e.Body)
+}
+
+// Is makes a 401 match provider.ErrUnauthorized.
+func (e *APIError) Is(target error) bool {
+	return target == provider.ErrUnauthorized && e.Code == http.StatusUnauthorized
 }
 
 // Call performs one API request. A non-nil form is sent url-encoded, which is

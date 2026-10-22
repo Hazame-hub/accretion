@@ -118,7 +118,7 @@ func New(t testing.TB) *Server {
 			"scsi0": "local-lvm:vm-101-disk-0,size=16G",
 		}},
 	}}
-	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
+	s.Server = httptest.NewTLSServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
 }

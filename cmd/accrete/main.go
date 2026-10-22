@@ -1,13 +1,20 @@
-// Command accrete plans an accretion/v1alpha1 Environment manifest against a
-// local state file and what the provider it names reports now.
+// Command accrete plans and applies an accretion/v1alpha1 Environment
+// manifest against a local state file and what the provider it names reports
+// now.
 //
-//	accrete plan -f env.yaml [--state accrete.state.json] [-o text|json]
+//	accrete plan    -f env.yaml [--state accrete.state.json] [-o text|json]
+//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
+//	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
 //
-// It reads and never writes: it sends the provider GET requests only, no
+// plan reads and never writes: it sends the provider GET requests only, no
 // machine is changed, and the state file is not rewritten. The plan comes
 // from the planner Sybil Continuum's API uses, so a line that is unknown
 // there is unknown here, and a machine the provider does not confirm is
 // unknown here even when its record alone would say no-op.
+//
+// apply and destroy print the same plan, ask before doing anything, and act
+// on its lines one machine at a time, writing the state after every step so
+// an interrupted run resumes where it stopped. See apply.go.
 //
 // The token comes from the file or environment variable the manifest's
 // spec.provider names. It is never printed, logged or written anywhere.
@@ -31,40 +38,62 @@ import (
 	"github.com/hazame-hub/accretion/provider/all"
 )
 
-const usage = `accrete plans an Environment manifest; it changes nothing.
+const usage = `accrete plans and applies an Environment manifest.
 
 Usage:
-  accrete plan -f env.yaml [--state FILE] [-o text|json] [--offline]
+  accrete plan    -f env.yaml [--state FILE] [-o text|json] [--offline]
+  accrete apply   -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
+  accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
 (token_env) holding the API token. --state defaults to accrete.state.json
 beside the manifest; a missing state means nothing is built yet.
 
-Exit status: 0 the plan has no errors, 1 it has errors, 2 accrete could not
-plan (bad flags, bad manifest or state, no token).
+plan changes nothing. apply builds what the plan says to create, resumes
+what an interrupted apply left half-built, removes what the manifest no
+longer declares and powers machines as declared. destroy removes every
+machine the state records for the environment. Both print the plan and ask
+for "yes" first, unless --auto-approve. A recorded machine the provider no
+longer lists keeps its record (the token may just not see it) unless
+--forget-gone.
+
+Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
+declined, or a machine failed or was not done, 2 accrete could not plan or
+start (bad flags, bad manifest or state, no token or a refused one, a state
+locked by another run).
 `
 
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv))
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
-	if len(args) == 0 || args[0] != "plan" {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy") {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
-	fs := flag.NewFlagSet("accrete plan", flag.ContinueOnError)
+	cmd := args[0]
+	writes := cmd != "plan"
+	fs := flag.NewFlagSet("accrete "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	file := fs.String("f", "", "the Environment manifest (YAML)")
 	statePath := fs.String("state", "", "the state file (default: accrete.state.json beside the manifest)")
-	output := fs.String("o", "text", "output: text or json")
-	offline := fs.Bool("offline", false, "do not contact the provider; recorded machines plan as unknown")
-	timeout := fs.Duration("timeout", 2*time.Minute, "how long the provider may take to answer, in all")
+	output, offline, autoApprove, forgetGone := new(string), new(bool), new(bool), new(bool)
+	defaultTimeout := 2 * time.Minute
+	if writes {
+		autoApprove = fs.Bool("auto-approve", false, "do not ask before acting")
+		forgetGone = fs.Bool("forget-gone", false, "retire the records of machines to delete that the provider no longer lists")
+		defaultTimeout = time.Hour
+	} else {
+		output = fs.String("o", "text", "output: text or json")
+		offline = fs.Bool("offline", false, "do not contact the provider; recorded machines plan as unknown")
+	}
+	timeout := fs.Duration("timeout", defaultTimeout, "how long the whole command may take")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *file == "" || fs.NArg() > 0 || (*output != "text" && *output != "json") {
+	if *file == "" || fs.NArg() > 0 || (!writes && *output != "text" && *output != "json") {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
@@ -92,14 +121,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	if *statePath == "" {
 		*statePath = filepath.Join(dir, "accrete.state.json")
 	}
+	if writes {
+		lock, err := lockState(*statePath, func(msg string) { fmt.Fprintf(stderr, "accrete: %s\n", msg) })
+		if err != nil {
+			return fail("%v", err)
+		}
+		defer lock.release()
+	}
 	state, err := loadState(*statePath)
 	if err != nil {
 		return fail("state: %v", err)
 	}
 
+	// destroy plans the environment as if it declared no machines: every
+	// recorded one is then a delete line, under the same guards.
+	planned := env
+	if cmd == "destroy" {
+		planned.Spec.Resources, planned.Spec.Networks = nil, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	world := &fileWorld{ctx: ctx, state: state, env: env, blueprints: driver.Blueprints(), explain: driver.Explain, now: time.Now}
+	world := &fileWorld{ctx: ctx, state: state, env: planned, blueprints: driver.Blueprints(), explain: driver.Explain, now: time.Now}
+	var session provider.Session
 	if *offline {
 		world.notAsked = "--offline"
 	} else {
@@ -112,7 +155,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 				return fail("%s: spec.provider: %v", *file, err)
 			}
 		}
-		session, err := driver.Provider.Connect(ctx, provider.Config{
+		session, err = driver.Provider.Connect(ctx, provider.Config{
 			Endpoint: ref.Endpoint, Params: map[string]any{"api_token": token}, VerifyTLS: ref.VerifyTLS,
 		})
 		if err != nil {
@@ -122,9 +165,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		world.session = session
 	}
 
-	p := plan.Build(env, world)
+	p := plan.Build(planned, world)
 	world.confirm(&p)
-	return emit(stdout, *output, p, world.Notes)
+	// A refused credential is a configuration error, not a plan whose
+	// machines are all unknown: nothing read after it is evidence.
+	if world.Refused != nil {
+		return fail("%s: spec.provider: %s", *file, world.why(world.Refused))
+	}
+	if !writes {
+		return emit(stdout, *output, p, world.Notes)
+	}
+	a := &applier{
+		ctx: ctx, in: stdin, out: stdout, cmd: cmd, autoApprove: *autoApprove,
+		statePath: *statePath, state: state, env: env, session: session,
+		provider: ProviderID(*ref), blueprints: driver.Blueprints(), recipe: driver.Recipe, explain: driver.Explain,
+	}
+	a.gone, a.forgetGone = world.GoneDeletes, *forgetGone
+	return a.run(p, world.Notes)
 }
 
 // apiPlan is the API's plan answer for one Environment: the plan, its summary
