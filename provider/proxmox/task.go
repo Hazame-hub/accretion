@@ -58,6 +58,20 @@ func (e *TaskTimeoutError) Error() string {
 	return fmt.Sprintf("proxmox: task %s still running after %s — stopped waiting; it may yet finish", e.UPID, e.After)
 }
 
+// TaskUnreadableError is a task whose status could not be read, a run of
+// polls in a row. Like a timeout, nothing is known about its outcome.
+type TaskUnreadableError struct {
+	UPID     string
+	Attempts int
+	Err      error
+}
+
+func (e *TaskUnreadableError) Error() string {
+	return fmt.Sprintf("proxmox: could not read task %s (%d attempts): %v", e.UPID, e.Attempts, e.Err)
+}
+
+func (e *TaskUnreadableError) Unwrap() error { return e.Err }
+
 // TaskPollFailures is how many consecutive status reads may fail before a wait
 // gives up. One dropped request says nothing about the task; a run of them says
 // the cluster cannot be asked.
@@ -69,8 +83,8 @@ const TaskPollFailures = 3
 //
 // Its three unhappy answers are different errors because they call for
 // different next steps: *TaskFailedError (the task ran and failed),
-// *TaskTimeoutError (the wait ran out; the outcome is unknown), and a plain
-// error when the task's status could not be read at all. Cancelling ctx ends
+// *TaskTimeoutError (the wait ran out; the outcome is unknown), and
+// *TaskUnreadableError when the task's status could not be read at all. Cancelling ctx ends
 // the wait at once with ctx.Err().
 func (c *Client) TaskWait(ctx context.Context, node, upid string, timeout time.Duration) error {
 	if node == "" {
@@ -103,7 +117,7 @@ func (c *Client) TaskWait(ctx context.Context, node, upid string, timeout time.D
 			}
 			failures++
 			if failures >= TaskPollFailures {
-				return fmt.Errorf("proxmox: could not read task %s (%d attempts): %w", upid, failures, err)
+				return &TaskUnreadableError{UPID: upid, Attempts: failures, Err: err}
 			}
 		} else {
 			failures = 0

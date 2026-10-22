@@ -86,6 +86,7 @@ var (
 
 func (s *session) Capabilities(context.Context) (provider.Capabilities, error) {
 	caps := capabilities
+	caps.Write = writeCapabilities
 	if s.context {
 		caps.Kinds = append(append([]provider.Kind{}, guestKinds...), contextKinds...)
 	}
