@@ -159,6 +159,9 @@ func DecodeStandalone(doc Document) (Environment, error) {
 		case "integration":
 			return Environment{}, fmt.Errorf("%s %q: spec.integration names a Sybil connector; an %s manifest names spec.provider instead",
 				KindEnvironment, name, EnvironmentStandaloneV1Alpha1)
+		case "images":
+			return Environment{}, fmt.Errorf("%s %q: spec.images is Sybil's image approval policy; accrete keeps no approvals, so an %s manifest does not set it",
+				KindEnvironment, name, EnvironmentStandaloneV1Alpha1)
 		default:
 			rest.Content = append(rest.Content, spec.Content[i], spec.Content[i+1])
 		}

@@ -152,6 +152,11 @@ func EnvironmentJSONSchema() map[string]any {
 				"properties": map[string]any{
 					"integration": str("The connector's name in Sybil."),
 					"group":       str("An asset group the machines join once accepted."),
+					"images": map[string]any{
+						"type": "string", "enum": []string{ImagesApprovedOnly, ImagesKnownOrWarn}, "default": ImagesApprovedOnly,
+						"description": "Sybil builds only from approved images. approved-only also refuses an image whose content Sybil cannot know " +
+							"(a template it did not build); known-or-warn plans that one with a warning. A known image that is not approved is refused either way.",
+					},
 					"variables": map[string]any{
 						"type":                 "object",
 						"description":          "Values used as {{var.name}} in inputs and images. A string that is only a reference takes the value's type.",
@@ -179,6 +184,7 @@ func StandaloneJSONSchema() map[string]any {
 	spec["required"] = []string{"provider"}
 	specProps := spec["properties"].(map[string]any)
 	delete(specProps, "integration")
+	delete(specProps, "images")
 	specProps["provider"] = map[string]any{
 		"type":                 "object",
 		"description":          "What builds the machines. The token is never written here: name the file or the environment variable that holds it.",

@@ -40,7 +40,15 @@ type ImageAnswer struct {
 	// Err says why the image could not be resolved: none or several of that
 	// name, or the provider could not be asked.
 	Err string
+	// Approval is the status of SHA256's image record, as the caller keeps
+	// them: "approved", "planned" or "rejected", and "" when there is no
+	// record. Read only when Snapshot.RequireApprovedImages is set.
+	Approval string
 }
+
+// ImageApproved is the one Approval a plan builds from when approved images
+// are required.
+const ImageApproved = "approved"
 
 // ImageNotPinned is stated when an image resolved by name only.
 const ImageNotPinned = "some images are named without a digest: a template rebuilt under the same name is taken as is; " +
@@ -173,11 +181,12 @@ func resourceImages(env envmanifest.Environment) map[string]string {
 }
 
 // resolveImages writes each instance's resolved image into its inputs, and
-// returns what is wrong, one message per resource and problem.
-func resolveImages(env envmanifest.Environment, instances []Instance, world Snapshot) (errs []string, unpinned bool) {
+// returns what is wrong, one message per resource and problem, and what the
+// operator should weigh.
+func resolveImages(env envmanifest.Environment, instances []Instance, world Snapshot) (errs, warnings []string, unpinned bool) {
 	images := resourceImages(env)
 	if len(images) == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	said := map[string]bool{}
 	report := func(msg string) {
@@ -186,6 +195,13 @@ func resolveImages(env envmanifest.Environment, instances []Instance, world Snap
 			errs = append(errs, msg)
 		}
 	}
+	warn := func(msg string) {
+		if !said[msg] {
+			said[msg] = true
+			warnings = append(warnings, msg)
+		}
+	}
+	built := builtInstances(env, world)
 	for i := range instances {
 		in := &instances[i]
 		image := images[in.Resource]
@@ -227,6 +243,27 @@ func resolveImages(env envmanifest.Environment, instances []Instance, world Snap
 				"from sha256:%s", in.Resource, q.Name, short(digest), short(ans.SHA256)))
 			continue
 		}
+		// Only for a machine still to be built: one that exists was built
+		// already, and refusing its plan would also refuse removing it.
+		if world.RequireApprovedImages && !built[instanceKey{in.Resource, in.Index}] {
+			switch {
+			case ans.SHA256 == "" && env.Spec.Images == envmanifest.ImagesKnownOrWarn:
+				warn(fmt.Sprintf("resource %q: image %q: provenance UNKNOWN: Sybil did not build that template from a verified image, "+
+					"so it cannot be approved; planned anyway because spec.images is %s", in.Resource, q.Name, envmanifest.ImagesKnownOrWarn))
+			case ans.SHA256 == "":
+				report(fmt.Sprintf("resource %q: image %q: provenance UNKNOWN: Sybil did not build that template from a verified image, "+
+					"so it cannot be approved. Build it through Sybil, or set spec.images: %s to plan it with a warning",
+					in.Resource, q.Name, envmanifest.ImagesKnownOrWarn))
+				continue
+			case ans.Approval != ImageApproved:
+				status := ans.Approval
+				if status == "" {
+					status = "not registered"
+				}
+				report(fmt.Sprintf("resource %q: image %q (sha256:%s) is %s, not approved", in.Resource, q.Name, short(ans.SHA256), status))
+				continue
+			}
+		}
 		inputs := make(map[string]any, len(in.Inputs)+1)
 		for k, v := range in.Inputs {
 			inputs[k] = v
@@ -234,7 +271,19 @@ func resolveImages(env envmanifest.Environment, instances []Instance, world Snap
 		inputs[input] = imageValue(ans.Value, world, in.Blueprint, input)
 		in.Inputs = inputs
 	}
-	return errs, unpinned
+	return errs, warnings, unpinned
+}
+
+// builtInstances are the instances of env a current realization already
+// stands for.
+func builtInstances(env envmanifest.Environment, world Snapshot) map[instanceKey]bool {
+	out := map[instanceKey]bool{}
+	for _, r := range world.Realizations {
+		if r.Current() && r.Intent != nil && r.Intent.Kind == IntentKind && r.Intent.Name == env.Name {
+			out[instanceKey{r.Intent.ResourceName, r.Intent.InstanceIndex}] = true
+		}
+	}
+	return out
 }
 
 // imageValue is the answer in the input's own type: a VMID listed as a number

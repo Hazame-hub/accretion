@@ -129,6 +129,12 @@ type Snapshot struct {
 	// manifest's ImageQueries. Read only when a resource names an image.
 	Selectors []Selector
 	Images    map[ImageQuery]ImageAnswer
+	// RequireApprovedImages makes a machine still to be built from an image
+	// need that image's record to be approved (ImageAnswer.Approval), and its
+	// content to be known unless spec.images says known-or-warn. Sybil sets
+	// it; accrete on its own keeps no approvals and leaves it false, which
+	// plans exactly as before it existed.
+	RequireApprovedImages bool
 	// Power is each machine's last observed state ("running", "stopped",
 	// "suspended", "unknown"), by asset. Read only when a resource declares
 	// power; a machine absent from it was never observed.
@@ -404,8 +410,9 @@ func Build(env envmanifest.Environment, w World) Plan {
 	plan.Limits = append(plan.Limits, placeLimits...)
 	// Before the inputs are checked: an image fills an input the blueprint
 	// may require.
-	imgErrs, unpinned := resolveImages(env, instances, world)
+	imgErrs, imgWarnings, unpinned := resolveImages(env, instances, world)
 	plan.Errors = append(plan.Errors, imgErrs...)
+	plan.Warnings = append(plan.Warnings, imgWarnings...)
 	plan.Errors = append(plan.Errors, assignAddresses(env, instances, world)...)
 	if unpinned {
 		plan.Limits = append(plan.Limits, ImageNotPinned)

@@ -86,6 +86,13 @@ type EnvironmentSpec struct {
 	// Variables are values named once and used as {{var.name}} in resources'
 	// inputs and images. Scalars only: a string, a number or a boolean.
 	Variables map[string]any
+	// Images is how Sybil treats an image whose content it cannot know: ""
+	// (approved-only, the default) refuses it, ImagesKnownOrWarn plans it
+	// with a warning. A known image that is not approved is refused either
+	// way. Sybil only: the planner reads it when its caller asks for approved
+	// images, which accrete on its own never does, and an accretion/v1alpha1
+	// manifest may not set it.
+	Images string
 	// Resources is the set of machines to bring into being, in the order the
 	// manifest declared them. Order is preserved rather than sorted: it is the
 	// operator's reading order, and re-emitting it differently would make a
@@ -235,6 +242,7 @@ type environmentNetworkWire struct {
 type environmentSpecWire struct {
 	Integration string                    `yaml:"integration"`
 	Group       string                    `yaml:"group,omitempty"`
+	Images      string                    `yaml:"images,omitempty"`
 	Variables   map[string]any            `yaml:"variables,omitempty"`
 	Networks    []environmentNetworkWire  `yaml:"networks,omitempty"`
 	Resources   []environmentResourceWire `yaml:"resources,omitempty"`
@@ -263,6 +271,13 @@ type environmentNICWire struct {
 
 // VariableName is what a spec.variables key may be.
 var VariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// Values of spec.images. ImagesApprovedOnly is the default and is written as
+// nothing.
+const (
+	ImagesApprovedOnly = "approved-only"
+	ImagesKnownOrWarn  = "known-or-warn"
+)
 
 // ImagePattern is what a resource's image may be: a name, optionally pinned
 // to a sha256 digest.
@@ -354,6 +369,11 @@ func DecodeEnvironment(doc Document) (Environment, error) {
 		Group:       strings.TrimSpace(wire.Group),
 		Variables:   vars,
 	}}
+	// The default is written as nothing, so a manifest that spells it out
+	// decodes to the same value as one that does not.
+	if images := strings.TrimSpace(wire.Images); images != ImagesApprovedOnly {
+		env.Spec.Images = images
+	}
 	if env.Spec.Integration == "" {
 		return Environment{}, fmt.Errorf("%s %q: spec.integration is required", KindEnvironment, name)
 	}
@@ -467,6 +487,10 @@ func (e Environment) Validate() error {
 		}
 	case strings.TrimSpace(e.Spec.Integration) == "":
 		return fmt.Errorf("%s %q: spec.integration is required", KindEnvironment, e.Name)
+	}
+	if e.Spec.Images != "" && e.Spec.Images != ImagesKnownOrWarn {
+		return fmt.Errorf("%s %q: spec.images is %q; want %s (the default) or %s",
+			KindEnvironment, e.Name, e.Spec.Images, ImagesApprovedOnly, ImagesKnownOrWarn)
 	}
 	for k, v := range e.Spec.Variables {
 		if !VariableName.MatchString(k) {
@@ -602,6 +626,7 @@ func EncodeEnvironment(env Environment) (Document, error) {
 	wire := environmentSpecWire{
 		Integration: env.Spec.Integration,
 		Group:       env.Spec.Group,
+		Images:      env.Spec.Images,
 		Variables:   env.Spec.Variables,
 	}
 	for _, n := range env.Spec.Networks {
