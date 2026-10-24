@@ -162,6 +162,8 @@ func DecodeStandalone(doc Document) (Environment, error) {
 		case "images":
 			return Environment{}, fmt.Errorf("%s %q: spec.images is Sybil's image approval policy; accrete keeps no approvals, so an %s manifest does not set it",
 				KindEnvironment, name, EnvironmentStandaloneV1Alpha1)
+		case "control_plane":
+			return Environment{}, fmt.Errorf("%s %q: %s", KindEnvironment, name, standaloneControlPlane("spec.control_plane"))
 		default:
 			rest.Content = append(rest.Content, spec.Content[i], spec.Content[i+1])
 		}
@@ -182,12 +184,26 @@ func DecodeStandalone(doc Document) (Environment, error) {
 	if err != nil {
 		return Environment{}, err
 	}
+	for _, n := range env.Spec.Networks {
+		if n.ControlPlane != nil {
+			return Environment{}, fmt.Errorf("%s %q: %s", KindEnvironment, name,
+				standaloneControlPlane(fmt.Sprintf("network %q control_plane", n.Name)))
+		}
+	}
 	env.Spec.Integration = ""
 	env.Spec.Provider = &ref
 	if err := env.Validate(); err != nil {
 		return Environment{}, err
 	}
 	return env, nil
+}
+
+// standaloneControlPlane says why where is refused in an accretion/v1alpha1
+// manifest: the address a machine reaches Sybil at means nothing to accrete,
+// which enrolls nothing.
+func standaloneControlPlane(where string) string {
+	return fmt.Sprintf("%s is the address Sybil's machines reach Sybil at; accrete enrolls nothing, so an %s manifest does not set it",
+		where, EnvironmentStandaloneV1Alpha1)
 }
 
 // ParseStandalone decodes exactly one accretion/v1alpha1 Environment
