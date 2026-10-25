@@ -46,18 +46,29 @@ func EnvironmentJSONSchema() map[string]any {
 		},
 	}
 
+	controlPlane := map[string]any{
+		"type": "object", "additionalProperties": false, "required": []string{"url", "grpc"},
+		"description": "Sybil only. The addresses a new machine is told to reach Sybil at: a LAN, VPN or tailnet address. " +
+			"Sybil records and checks the route; it does not build it.",
+		"properties": map[string]any{
+			"url":  map[string]any{"type": "string", "pattern": "^https?://", "description": "The REST base the machine fetches its installer from, e.g. http://100.80.85.32:8080."},
+			"grpc": str("host:port the agent dials, e.g. 100.80.85.32:50051."),
+		},
+	}
+
 	network := map[string]any{
 		"type": "object", "additionalProperties": false, "required": []string{"name", "subnet"},
 		"properties": map[string]any{
-			"name":         map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9]{0,7}$`, "description": "1-8 lowercase letters and digits: it becomes an interface name."},
-			"zone":         map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9]{0,7}$`, "default": DefaultNetworkZone},
-			"subnet":       str("A canonical CIDR, e.g. 10.20.0.0/24."),
-			"gateway":      str("Defaults to the subnet's first address."),
-			"snat":         map[string]any{"type": "boolean", "default": true, "description": "Outbound access through the node."},
-			"dhcp":         map[string]any{"type": "boolean", "default": false, "description": "Needs dnsmasq on every node."},
-			"dhcp_range":   str("START-END; defaults to the upper half of the subnet."),
-			"static_range": str("START-END the addresses of `ip: static` come from."),
-			"dns":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Name servers for machines with a fixed address."},
+			"name":          map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9]{0,7}$`, "description": "1-8 lowercase letters and digits: it becomes an interface name."},
+			"zone":          map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9]{0,7}$`, "default": DefaultNetworkZone},
+			"subnet":        str("A canonical CIDR, e.g. 10.20.0.0/24."),
+			"gateway":       str("Defaults to the subnet's first address."),
+			"snat":          map[string]any{"type": "boolean", "default": true, "description": "Outbound access through the node."},
+			"dhcp":          map[string]any{"type": "boolean", "default": false, "description": "Needs dnsmasq on every node."},
+			"dhcp_range":    str("START-END; defaults to the upper half of the subnet."),
+			"static_range":  str("START-END the addresses of `ip: static` come from."),
+			"dns":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Name servers for machines with a fixed address."},
+			"control_plane": controlPlane,
 		},
 	}
 
@@ -157,6 +168,7 @@ func EnvironmentJSONSchema() map[string]any {
 						"description": "Sybil builds only from approved images. approved-only also refuses an image whose content Sybil cannot know " +
 							"(a template it did not build); known-or-warn plans that one with a warning. A known image that is not approved is refused either way.",
 					},
+					"control_plane": controlPlane,
 					"variables": map[string]any{
 						"type":                 "object",
 						"description":          "Values used as {{var.name}} in inputs and images. A string that is only a reference takes the value's type.",
@@ -185,6 +197,9 @@ func StandaloneJSONSchema() map[string]any {
 	specProps := spec["properties"].(map[string]any)
 	delete(specProps, "integration")
 	delete(specProps, "images")
+	delete(specProps, "control_plane")
+	network := specProps["networks"].(map[string]any)["items"].(map[string]any)
+	delete(network["properties"].(map[string]any), "control_plane")
 	specProps["provider"] = map[string]any{
 		"type":                 "object",
 		"description":          "What builds the machines. The token is never written here: name the file or the environment variable that holds it.",

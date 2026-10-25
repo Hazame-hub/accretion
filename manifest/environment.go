@@ -2,9 +2,12 @@ package manifest
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -86,6 +89,12 @@ type EnvironmentSpec struct {
 	// Variables are values named once and used as {{var.name}} in resources'
 	// inputs and images. Scalars only: a string, a number or a boolean.
 	Variables map[string]any
+	// ControlPlane is the address pair the Environment's machines are told to
+	// reach Sybil at, nil for the server's own default. A network may say
+	// otherwise for the machines whose first card joins it. Sybil only, like
+	// Images: an accretion/v1alpha1 manifest may not set it, and nothing in
+	// this module resolves it.
+	ControlPlane *ControlPlane
 	// Images is how Sybil treats an image whose content it cannot know: ""
 	// (approved-only, the default) refuses it, ImagesKnownOrWarn plans it
 	// with a warning. A known image that is not approved is refused either
@@ -211,6 +220,85 @@ type EnvironmentNetwork struct {
 	// Required for one: with no DHCP to hand them out, a machine without
 	// them cannot resolve a package mirror.
 	DNS []string
+	// ControlPlane is how the machines whose first card joins this network
+	// reach Sybil, when that is not the Environment's: a LAN address, a VPN
+	// or tailnet one. Nil defers to spec.control_plane. Sybil only.
+	ControlPlane *ControlPlane
+}
+
+// ControlPlane is the pair of addresses a provisioned machine is told to reach
+// Sybil at: the REST base it fetches its installer from, and the gRPC address
+// its agent dials. Always both: they are one listener as one network sees it,
+// and half of a route is no route.
+//
+// It is a statement of how the network reaches Sybil, not a request to build
+// that path — no VPN, tailnet or router is configured from it.
+type ControlPlane struct {
+	// URL is http(s)://host[:port], with no path, query or credentials.
+	URL string
+	// GRPC is host:port.
+	GRPC string
+}
+
+type controlPlaneWire struct {
+	URL  string `yaml:"url"`
+	GRPC string `yaml:"grpc"`
+}
+
+func decodeControlPlane(w *controlPlaneWire) (*ControlPlane, error) {
+	if w == nil {
+		return nil, nil
+	}
+	cp := &ControlPlane{URL: strings.TrimSpace(w.URL), GRPC: strings.TrimSpace(w.GRPC)}
+	return cp, cp.validate()
+}
+
+func encodeControlPlane(cp *ControlPlane) *controlPlaneWire {
+	if cp == nil {
+		return nil
+	}
+	return &controlPlaneWire{URL: cp.URL, GRPC: cp.GRPC}
+}
+
+// validate checks the shape only. Whether the address is one the machine can
+// use — not its own loopback, covered by the server's certificate, reachable
+// from the network — is the embedder's to judge: it knows the server.
+func (cp *ControlPlane) validate() error {
+	if cp == nil {
+		return nil
+	}
+	if cp.URL == "" || cp.GRPC == "" {
+		return fmt.Errorf("control_plane needs both url and grpc; they are one listener as this network sees it")
+	}
+	u, err := url.Parse(cp.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("control_plane.url %q must be http(s)://host[:port]", cp.URL)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return fmt.Errorf("control_plane.url %q must be only a scheme, a host and a port", cp.URL)
+	}
+	if err := checkPort(u.Port(), true); err != nil {
+		return fmt.Errorf("control_plane.url %q: %w", cp.URL, err)
+	}
+	host, port, err := net.SplitHostPort(cp.GRPC)
+	if err != nil || host == "" {
+		return fmt.Errorf("control_plane.grpc %q must be host:port", cp.GRPC)
+	}
+	if err := checkPort(port, false); err != nil {
+		return fmt.Errorf("control_plane.grpc %q: %w", cp.GRPC, err)
+	}
+	return nil
+}
+
+func checkPort(p string, optional bool) error {
+	if p == "" && optional {
+		return nil
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("port %q is not 1-65535", p)
+	}
+	return nil
 }
 
 // DefaultNetworkZone is the zone a network without one is created in.
@@ -232,6 +320,8 @@ type environmentNetworkWire struct {
 	DHCPRange   string   `yaml:"dhcp_range,omitempty"`
 	StaticRange string   `yaml:"static_range,omitempty"`
 	DNS         []string `yaml:"dns,omitempty"`
+	// ControlPlane is Sybil only; see EnvironmentNetwork.ControlPlane.
+	ControlPlane *controlPlaneWire `yaml:"control_plane,omitempty"`
 }
 
 // environmentSpecWire is the on-disk shape, which is not quite the validated
@@ -240,12 +330,14 @@ type environmentNetworkWire struct {
 // resource that would make nothing and is an error worth reporting rather
 // than quietly promoting to one.
 type environmentSpecWire struct {
-	Integration string                    `yaml:"integration"`
-	Group       string                    `yaml:"group,omitempty"`
-	Images      string                    `yaml:"images,omitempty"`
-	Variables   map[string]any            `yaml:"variables,omitempty"`
-	Networks    []environmentNetworkWire  `yaml:"networks,omitempty"`
-	Resources   []environmentResourceWire `yaml:"resources,omitempty"`
+	Integration string `yaml:"integration"`
+	Group       string `yaml:"group,omitempty"`
+	Images      string `yaml:"images,omitempty"`
+	// ControlPlane is Sybil only; see EnvironmentSpec.ControlPlane.
+	ControlPlane *controlPlaneWire         `yaml:"control_plane,omitempty"`
+	Variables    map[string]any            `yaml:"variables,omitempty"`
+	Networks     []environmentNetworkWire  `yaml:"networks,omitempty"`
+	Resources    []environmentResourceWire `yaml:"resources,omitempty"`
 }
 
 type environmentResourceWire struct {
@@ -377,6 +469,9 @@ func DecodeEnvironment(doc Document) (Environment, error) {
 	if env.Spec.Integration == "" {
 		return Environment{}, fmt.Errorf("%s %q: spec.integration is required", KindEnvironment, name)
 	}
+	if env.Spec.ControlPlane, err = decodeControlPlane(wire.ControlPlane); err != nil {
+		return Environment{}, fmt.Errorf("%s %q: spec.%w", KindEnvironment, name, err)
+	}
 	for i, n := range wire.Networks {
 		net, err := decodeNetwork(n)
 		if err != nil {
@@ -487,6 +582,9 @@ func (e Environment) Validate() error {
 		}
 	case strings.TrimSpace(e.Spec.Integration) == "":
 		return fmt.Errorf("%s %q: spec.integration is required", KindEnvironment, e.Name)
+	}
+	if err := e.Spec.ControlPlane.validate(); err != nil {
+		return fmt.Errorf("%s %q: spec.%w", KindEnvironment, e.Name, err)
 	}
 	if e.Spec.Images != "" && e.Spec.Images != ImagesKnownOrWarn {
 		return fmt.Errorf("%s %q: spec.images is %q; want %s (the default) or %s",
@@ -624,10 +722,11 @@ func EncodeEnvironment(env Environment) (Document, error) {
 		return Document{}, err
 	}
 	wire := environmentSpecWire{
-		Integration: env.Spec.Integration,
-		Group:       env.Spec.Group,
-		Images:      env.Spec.Images,
-		Variables:   env.Spec.Variables,
+		Integration:  env.Spec.Integration,
+		Group:        env.Spec.Group,
+		Images:       env.Spec.Images,
+		ControlPlane: encodeControlPlane(env.Spec.ControlPlane),
+		Variables:    env.Spec.Variables,
 	}
 	for _, n := range env.Spec.Networks {
 		snat := n.SNAT
@@ -635,6 +734,7 @@ func EncodeEnvironment(env Environment) (Document, error) {
 		wire.Networks = append(wire.Networks, environmentNetworkWire{
 			Name: n.Name, Zone: n.Zone, Subnet: n.Subnet, Gateway: n.Gateway, SNAT: &snat,
 			DHCP: &dhcp, DHCPRange: n.DHCPRange, StaticRange: n.StaticRange, DNS: n.DNS,
+			ControlPlane: encodeControlPlane(n.ControlPlane),
 		})
 	}
 	for _, r := range env.Spec.Resources {
@@ -816,6 +916,11 @@ func decodeNetwork(w environmentNetworkWire) (EnvironmentNetwork, error) {
 	for _, d := range w.DNS {
 		n.DNS = append(n.DNS, strings.TrimSpace(d))
 	}
+	cp, err := decodeControlPlane(w.ControlPlane)
+	if err != nil {
+		return EnvironmentNetwork{}, fmt.Errorf("network %q: %w", n.Name, err)
+	}
+	n.ControlPlane = cp
 	return n, n.validate()
 }
 
@@ -872,6 +977,9 @@ func (n EnvironmentNetwork) validate() error {
 		if _, err := netip.ParseAddr(d); err != nil {
 			return fmt.Errorf("network %q: dns %q is not an address", n.Name, d)
 		}
+	}
+	if err := n.ControlPlane.validate(); err != nil {
+		return fmt.Errorf("network %q: %w", n.Name, err)
 	}
 	return nil
 }

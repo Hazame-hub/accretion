@@ -199,6 +199,10 @@ type Entry struct {
 	// Placement is the node the instance is or will be on, for resources that
 	// declare a placement.
 	Placement *PlacementNote `json:"placement,omitempty"`
+	// ControlPlane is the route a create tells the machine to reach its
+	// control plane at, when the manifest names one; nil leaves the
+	// embedder's default. Not an input: see controlplane.go.
+	ControlPlane *ControlPlaneNote `json:"control_plane,omitempty"`
 }
 
 // InputDiff is one input the manifest now declares differently. From is what
@@ -414,6 +418,8 @@ func Build(env envmanifest.Environment, w World) Plan {
 	plan.Errors = append(plan.Errors, imgErrs...)
 	plan.Warnings = append(plan.Warnings, imgWarnings...)
 	plan.Errors = append(plan.Errors, assignAddresses(env, instances, world)...)
+	controlPlanes, cpErrs := resolveControlPlanes(env, instances, world)
+	plan.Errors = append(plan.Errors, cpErrs...)
 	if unpinned {
 		plan.Limits = append(plan.Limits, ImageNotPinned)
 	}
@@ -541,6 +547,7 @@ func Build(env envmanifest.Environment, w World) Plan {
 			entry.Reason = "a run is already building this instance; its outcome is not known yet"
 		default:
 			entry.Action = ActionCreate
+			entry.ControlPlane = controlPlanes[key]
 		}
 		plan.Entries = append(plan.Entries, entry)
 	}

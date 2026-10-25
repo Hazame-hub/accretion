@@ -24,6 +24,26 @@
     "spec": {
       "additionalProperties": false,
       "properties": {
+        "control_plane": {
+          "additionalProperties": false,
+          "description": "Sybil only. The addresses a new machine is told to reach Sybil at: a LAN, VPN or tailnet address. Sybil records and checks the route; it does not build it.",
+          "properties": {
+            "grpc": {
+              "description": "host:port the agent dials, e.g. 100.80.85.32:50051.",
+              "type": "string"
+            },
+            "url": {
+              "description": "The REST base the machine fetches its installer from, e.g. http://100.80.85.32:8080.",
+              "pattern": "^https?://",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url",
+            "grpc"
+          ],
+          "type": "object"
+        },
         "group": {
           "description": "An asset group the machines join once accepted.",
           "type": "string"
@@ -45,6 +65,26 @@
           "items": {
             "additionalProperties": false,
             "properties": {
+              "control_plane": {
+                "additionalProperties": false,
+                "description": "Sybil only. The addresses a new machine is told to reach Sybil at: a LAN, VPN or tailnet address. Sybil records and checks the route; it does not build it.",
+                "properties": {
+                  "grpc": {
+                    "description": "host:port the agent dials, e.g. 100.80.85.32:50051.",
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "The REST base the machine fetches its installer from, e.g. http://100.80.85.32:8080.",
+                    "pattern": "^https?://",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "grpc"
+                ],
+                "type": "object"
+              },
               "dhcp": {
                 "default": false,
                 "description": "Needs dnsmasq on every node.",
