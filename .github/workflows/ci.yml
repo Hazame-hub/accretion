@@ -1,0 +1,75 @@
+# Accretion's checks. The repository is public, so every job runs on
+# GitHub-hosted runners: a self-hosted runner would run code from anyone's
+# fork. Never add pull_request_target here, and keep the token read-only.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      # boundary_test.go fails if anything here imports Sybil.
+      - name: go vet and go test
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: accrete builds on Linux, macOS and Windows
+        run: |
+          for os in linux darwin windows; do
+            GOOS=$os GOARCH=amd64 go build -o /dev/null ./cmd/accrete
+          done
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_VERSION: 2.15.0
+          GOLANGCI_SHA256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+        run: |
+          dir="$RUNNER_TEMP/golangci-lint-$GOLANGCI_VERSION"
+          mkdir -p "$dir"
+          tarball="$dir/golangci-lint.tar.gz"
+          curl -sSfL -o "$tarball" "https://github.com/golangci/golangci-lint/releases/download/v$GOLANGCI_VERSION/golangci-lint-$GOLANGCI_VERSION-linux-amd64.tar.gz"
+          echo "$GOLANGCI_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$dir" --strip-components=1 "golangci-lint-$GOLANGCI_VERSION-linux-amd64/golangci-lint"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      # Only what a change introduces fails: on a pull request, issues new
+      # since its base; on main, issues new since the previous push (or the
+      # previous commit when there is none, as on a branch's first push).
+      # What the code already carried is left for whoever next touches it.
+      - name: Lint
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=HEAD~1
+          fi
+          golangci-lint run --new-from-rev="$BASE" ./...

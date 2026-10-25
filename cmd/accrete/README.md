@@ -8,13 +8,13 @@ rewritten.
 
 ## Plan the example
 
-From `accretion/`, after setting `endpoint`, `node` and `template` in a copy
+From the repository root, after setting `endpoint`, `node` and `template` in a copy
 of `examples/two-vms.yaml` to your cluster's:
 
 ```sh
 export ACCRETE_PROXMOX_TOKEN='user@realm!tokenid=secret'
-GOWORK=off go run ./cmd/accrete plan -f examples/two-vms.yaml
-GOWORK=off go run ./cmd/accrete plan -f examples/two-vms.yaml -o json
+go run ./cmd/accrete plan -f examples/two-vms.yaml
+go run ./cmd/accrete plan -f examples/two-vms.yaml -o json
 ```
 
 PowerShell:
@@ -22,7 +22,6 @@ PowerShell:
 ```powershell
 $s = Read-Host -AsSecureString 'API token secret'   # typed masked
 $env:ACCRETE_PROXMOX_TOKEN = 'user@realm!tokenid=' + [Net.NetworkCredential]::new('', $s).Password
-$env:GOWORK = 'off'
 go run ./cmd/accrete plan -f examples/two-vms.yaml
 ```
 

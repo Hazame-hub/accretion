@@ -13,16 +13,21 @@ are shared, and this module never imports Sybil (`boundary_test.go`).
 
 ## Install
 
-You need Go 1.26.1 or later and a clone of this repository.
+You need Go 1.26.1 or later.
 
 ```sh
-cd accretion
-GOWORK=off go build -o accrete ./cmd/accrete
+go install github.com/hazame-hub/accretion/cmd/accrete@latest
+accrete plan -h
+```
+
+Or from a clone of this repository:
+
+```sh
+go build -o accrete ./cmd/accrete
 ./accrete plan -h
 ```
 
-The binary is self-contained. Put it anywhere on your `PATH`. No release is
-published yet.
+The binary is self-contained. Put it anywhere on your `PATH`.
 
 ## Quickstart on Proxmox (5 minutes)
 
@@ -254,7 +259,7 @@ in-memory PVE (`provider/proxmox/pvetest`).
 ## Tests
 
 ```sh
-cd accretion && GOWORK=off go test ./...
+go test ./...
 ```
 
 Nothing here calls a real hypervisor.
