@@ -325,6 +325,14 @@ func (c *Client) isIn(ctx context.Context, node, kind, vmID string, op powerOp, 
 // the moment its guest is gone, and a name is changed by anyone with a
 // keyboard, but the UUID was chosen when the machine was made.
 //
+// owner_marker, when given with expected_uuid, is the one other proof
+// accepted: a guest whose SMBIOS UUID is not yet the expected one is deleted
+// if its description is exactly the marker. That is the clone that a create
+// run made and could not finish configuring — the clone writes its marker in
+// the request that creates the guest, before any UUID is stamped on it — and
+// the run's rollback has to be able to remove it. Name, node and type are
+// still checked; a marker never stands in for them.
+//
 // It is written to be retried, and to be right about what happened when an
 // answer is lost. A guest already gone has been deleted. A delete whose
 // request errored or whose task outlived the wait is judged by the cluster
@@ -406,7 +414,7 @@ func (c *Client) DeleteGuest(ctx context.Context, p map[string]interface{}) (str
 			return "", nil, fmt.Errorf(
 				"proxmox: cannot read the SMBIOS UUID of %s to confirm it is the guest meant — refusing: %w", target, err)
 		}
-		if !SameUUID(got, wantUUID) {
+		if !SameUUID(got, wantUUID) && !c.carriesMarker(ctx, node, kind, vmID, strParam(p, "owner_marker")) {
 			if got == "" {
 				got = "none"
 			}
@@ -564,4 +572,20 @@ func isDriveKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// carriesMarker reports whether a guest's description is exactly marker. An
+// empty marker, or a config that cannot be read, is never a match.
+func (c *Client) carriesMarker(ctx context.Context, node, kind, vmID, marker string) bool {
+	marker = strings.TrimSpace(marker)
+	if marker == "" {
+		return false
+	}
+	var cfg struct {
+		Description string `json:"description"`
+	}
+	if err := c.Get(ctx, fmt.Sprintf("/nodes/%s/%s/%s/config", node, kind, vmID), &cfg); err != nil {
+		return false
+	}
+	return strings.TrimSpace(cfg.Description) == marker
 }
