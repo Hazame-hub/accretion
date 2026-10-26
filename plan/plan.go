@@ -125,6 +125,12 @@ type Snapshot struct {
 	// machines. Nil means it was not read; CapacityError then says why.
 	Capacity      *Capacity
 	CapacityError string
+	// Unmanaged are the provider's guests that no current realization
+	// accounts for, each name with the ref of a guest that carries it. Read
+	// when the manifest declares machines. Nil means they were not read;
+	// UnmanagedError then says why.
+	Unmanaged      map[string]string
+	UnmanagedError string
 	// Selectors are the connector's pickers, and Images the answers to the
 	// manifest's ImageQueries. Read only when a resource names an image.
 	Selectors []Selector
@@ -548,6 +554,19 @@ func Build(env envmanifest.Environment, w World) Plan {
 		default:
 			entry.Action = ActionCreate
 			entry.ControlPlane = controlPlanes[key]
+			// A guest of this name that nothing accounts for is most likely
+			// what a create that failed part-way left behind: its clone was
+			// made, and the failure came before its realization was. A
+			// second create would build another machine of the same name
+			// beside it, which every identity rule here then has to tell
+			// apart from the first.
+			if name, _ := entry.Inputs["hostname"].(string); name != "" {
+				if ref, taken := world.Unmanaged[name]; taken {
+					entry.Action = ActionUnknown
+					entry.Reason = fmt.Sprintf("a guest named %q is already on the provider (%s) and nothing built for an environment accounts for it; "+
+						"a create that failed part-way may have left it. Retry that run, or remove the guest, before this instance is created", name, ref)
+				}
+			}
 		}
 		plan.Entries = append(plan.Entries, entry)
 	}
@@ -563,6 +582,7 @@ func Build(env envmanifest.Environment, w World) Plan {
 	}
 	gateOnNetworks(env, plan.Entries, plan.Networks)
 	capacityNotes(&plan, world)
+	unmanagedNotes(&plan, world)
 
 	// Runs still building an instance the manifest no longer declares — the
 	// count was lowered mid-build. Nothing to delete yet, and not nothing.
