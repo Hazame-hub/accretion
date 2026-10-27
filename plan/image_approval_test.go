@@ -86,3 +86,35 @@ func TestAWithdrawnImageRefusesOnlyMachinesStillToBuild(t *testing.T) {
 		t.Fatalf("the machine already built was refused: %v", p.Errors)
 	}
 }
+
+// A create names the digest whose approval it was planned on, so whatever
+// launches it can check that decision again when the run is approved: the
+// plan is shown, and acted on, possibly days later.
+func TestACreateNamesTheImageItWasApprovedOn(t *testing.T) {
+	q := ImageQuery{Name: "rocky-9", Selector: "template", Params: "node=pve"}
+	e := imageEnv("rocky-9", nil)
+	w := imageWorld(map[ImageQuery]ImageAnswer{q: {Value: float64(103), SHA256: rockyDigest, Approval: ImageApproved}})
+	w.RequireApprovedImages = true
+	p := Build(e, w)
+	if !p.OK() || len(p.Entries) == 0 {
+		t.Fatalf("plan: %v", p.Errors)
+	}
+	for _, en := range p.Entries {
+		if en.ImageSHA256 != rockyDigest {
+			t.Fatalf("%s/%d: ImageSHA256 = %q, want %q", en.Resource, en.Index, en.ImageSHA256, rockyDigest)
+		}
+		for k, v := range en.Inputs {
+			if v == rockyDigest {
+				t.Fatalf("the digest is in the declared input %q, where it would read as drift", k)
+			}
+		}
+	}
+
+	// An image of unknown content has no digest to name.
+	e.Spec.Images = envmanifest.ImagesKnownOrWarn
+	w = imageWorld(map[ImageQuery]ImageAnswer{q: {Value: float64(103)}})
+	w.RequireApprovedImages = true
+	if p := Build(e, w); !p.OK() || p.Entries[0].ImageSHA256 != "" {
+		t.Fatalf("unknown content: ok=%v digest %q", p.OK(), p.Entries[0].ImageSHA256)
+	}
+}
