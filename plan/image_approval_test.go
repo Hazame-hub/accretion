@@ -108,6 +108,9 @@ func TestACreateNamesTheImageItWasApprovedOn(t *testing.T) {
 				t.Fatalf("the digest is in the declared input %q, where it would read as drift", k)
 			}
 		}
+		if got := en.LaunchInputs()[ImageDigestInput]; got != rockyDigest {
+			t.Fatalf("the run is launched with %s = %v", ImageDigestInput, got)
+		}
 	}
 
 	// An image of unknown content has no digest to name.
