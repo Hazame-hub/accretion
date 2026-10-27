@@ -216,6 +216,9 @@ type Entry struct {
 	ImageSHA256 string `json:"image_sha256,omitempty"`
 }
 
+// ImageDigestInput is the run input LaunchInputs gives Entry.ImageSHA256 as.
+const ImageDigestInput = "image_sha256"
+
 // InputDiff is one input the manifest now declares differently. From is what
 // the machine was built with, To is what the manifest says; either is absent
 // when the input was added or removed.

@@ -39,21 +39,27 @@ type ControlPlaneNote struct {
 }
 
 // LaunchInputs is what a create's run is started with: the entry's inputs,
-// plus its route when it has one. The run's recorded declaration stays
+// plus its route when it has one, and the digest of its image under
+// ImageDigestInput when that is known. The run's recorded declaration stays
 // e.Inputs.
 func (e Entry) LaunchInputs() map[string]any {
 	cp := e.ControlPlane
-	if cp == nil {
+	if cp == nil && e.ImageSHA256 == "" {
 		return e.Inputs
 	}
-	out := make(map[string]any, len(e.Inputs)+3)
+	out := make(map[string]any, len(e.Inputs)+4)
 	for k, v := range e.Inputs {
 		out[k] = v
 	}
-	out[cp.urlInput] = cp.URL
-	out[cp.grpcInput] = cp.GRPC
-	if cp.fromInput != "" {
-		out[cp.fromInput] = cp.From
+	if cp != nil {
+		out[cp.urlInput] = cp.URL
+		out[cp.grpcInput] = cp.GRPC
+		if cp.fromInput != "" {
+			out[cp.fromInput] = cp.From
+		}
+	}
+	if e.ImageSHA256 != "" {
+		out[ImageDigestInput] = e.ImageSHA256
 	}
 	return out
 }
