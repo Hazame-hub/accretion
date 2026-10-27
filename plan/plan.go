@@ -209,6 +209,11 @@ type Entry struct {
 	// control plane at, when the manifest names one; nil leaves the
 	// embedder's default. Not an input: see controlplane.go.
 	ControlPlane *ControlPlaneNote `json:"control_plane,omitempty"`
+	// ImageSHA256 is the digest of the image a create builds from, when its
+	// content is known: the one whose approval the plan read. Not an input,
+	// so it is not part of the declaration either; it is there for the
+	// embedder to check that decision again when the create is approved.
+	ImageSHA256 string `json:"image_sha256,omitempty"`
 }
 
 // InputDiff is one input the manifest now declares differently. From is what
@@ -290,6 +295,9 @@ type Instance struct {
 	Index     int
 	Blueprint string
 	Inputs    map[string]any
+	// ImageSHA256 is the digest of the image its template was built from,
+	// when its image was looked up and that content is known.
+	ImageSHA256 string
 	// Unplaced is set when placement found no node for the instance. Its
 	// node input is then unset, so nothing that needs the node (its image,
 	// its input check) is tried: the placement error already says why.
@@ -491,7 +499,7 @@ func Build(env envmanifest.Environment, w World) Plan {
 		key := instanceKey{in.Resource, in.Index}
 		declared[key] = true
 		entry := Entry{Resource: in.Resource, Index: in.Index, Blueprint: in.Blueprint, Inputs: withConnector(in, world),
-			Placement: placements[key]}
+			Placement: placements[key], ImageSHA256: in.ImageSHA256}
 		r, realized := current[key]
 		runID, inFlight := building[key]
 		switch {

@@ -270,6 +270,7 @@ func resolveImages(env envmanifest.Environment, instances []Instance, world Snap
 		}
 		inputs[input] = imageValue(ans.Value, world, in.Blueprint, input)
 		in.Inputs = inputs
+		in.ImageSHA256 = ans.SHA256
 	}
 	return errs, warnings, unpinned
 }
