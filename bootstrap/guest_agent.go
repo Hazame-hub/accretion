@@ -14,6 +14,14 @@ package bootstrap
 // token with VM.GuestAgent.FileRead can read files and do nothing more.
 // Images without that file (Debian, Ubuntu) block nothing and are left alone;
 // the agent is restarted only when the file was changed.
+//
+// SELinux is the second lock. On an enforcing RHEL-family guest the agent
+// runs confined (virt_qemu_ga_t), and the policy refuses it ordinary files
+// even with the commands allowed: the read fails "Permission denied". The
+// boolean virt_qemu_ga_read_nonsecurity_files lets it read files that are not
+// security files (shadow, keys and the like stay refused), which is what the
+// FileRead privilege is meant to grant. It is turned on only where SELinux
+// tools exist and it is off; it is a read permission and nothing more.
 
 // QemuGAConfig is the agent's settings file on RHEL-family guests.
 const QemuGAConfig = "/etc/sysconfig/qemu-ga"
@@ -21,11 +29,18 @@ const QemuGAConfig = "/etc/sysconfig/qemu-ga"
 // guestAgentFileRPCs are the agent commands a guest file read uses.
 const guestAgentFileRPCs = "guest-file-open,guest-file-read,guest-file-close"
 
+// guestAgentReadBool is the SELinux boolean that lets the confined agent read
+// files that are not security files.
+const guestAgentReadBool = "virt_qemu_ga_read_nonsecurity_files"
+
 // guestAgentFilesScript is run as `sh -c guestAgentFilesScript
-// guest-agent-files RPCS`. It never fails the boot: a guest it cannot fix is
+// guest-agent-files RPCS BOOL`. It never fails the boot: a guest it cannot fix is
 // left exactly as unreadable as it was.
 // ACCRETION_QEMU_GA_CONFIG moves the file, for tests.
-const guestAgentFilesScript = `want=$1
+const guestAgentFilesScript = `want=$1 bool=$2
+if command -v getsebool >/dev/null 2>&1 && getsebool "$bool" 2>/dev/null | grep -q -- '--> off$'; then
+  setsebool -P "$bool" on 2>/dev/null || true
+fi
 f=${ACCRETION_QEMU_GA_CONFIG:-` + QemuGAConfig + `}
 [ -f "$f" ] || exit 0
 awk -v want="$want" '
@@ -68,5 +83,5 @@ exit 0`
 // reads. Put it after the command that starts the agent and before anything
 // the hypervisor is meant to read.
 func AllowGuestFileReads() []string {
-	return []string{"sh", "-c", guestAgentFilesScript, "guest-agent-files", guestAgentFileRPCs}
+	return []string{"sh", "-c", guestAgentFilesScript, "guest-agent-files", guestAgentFileRPCs, guestAgentReadBool}
 }

@@ -40,6 +40,15 @@ func renderedCommand(t *testing.T) []string {
 // file afterwards and what systemctl was asked to do.
 func runAllowGuestFileReads(t *testing.T, conf string) (string, string) {
 	t.Helper()
+	got, calls, _ := runAllowGuestFileReadsSELinux(t, conf, "")
+	return got, calls
+}
+
+// runAllowGuestFileReadsSELinux is runAllowGuestFileReads on a guest whose
+// SELinux boolean is sebool ("on" or "off"; empty means no SELinux tools). It
+// also returns what setsebool was asked to do.
+func runAllowGuestFileReadsSELinux(t *testing.T, conf, sebool string) (string, string, string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		// MSYS sh mangles the Windows paths in the fake systemctl.
 		t.Skip("needs a POSIX system")
@@ -65,6 +74,17 @@ func runAllowGuestFileReads(t *testing.T, conf string) (string, string) {
 	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	selog := filepath.Join(dir, "setsebool.log")
+	if sebool != "" {
+		get := "#!/bin/sh\necho \"$1 --> " + sebool + "\"\n"
+		set := "#!/bin/sh\necho \"$@\" >> " + selog + "\n"
+		if err := os.WriteFile(filepath.Join(bin, "getsebool"), []byte(get), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "setsebool"), []byte(set), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cmd := renderedCommand(t)
 	c := exec.Command(cmd[0], cmd[1:]...)
 	c.Env = append(os.Environ(), "ACCRETION_QEMU_GA_CONFIG="+path, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -73,10 +93,11 @@ func runAllowGuestFileReads(t *testing.T, conf string) (string, string) {
 	}
 	got, _ := os.ReadFile(path)
 	calls, _ := os.ReadFile(log)
+	secalls, _ := os.ReadFile(selog)
 	if _, err := os.Stat(path + ".accretion"); err == nil {
 		t.Error("the temporary file was left behind")
 	}
-	return string(got), strings.TrimSpace(string(calls))
+	return string(got), strings.TrimSpace(string(calls)), strings.TrimSpace(string(secalls))
 }
 
 // Rocky / RHEL 9: an allow-list that leaves the file commands out.
@@ -133,5 +154,17 @@ func TestTheAgentIsLeftAloneWhenNothingBlocksTheReads(t *testing.T) {
 	}
 	if got, calls := runAllowGuestFileReads(t, ""); got != "" || calls != "" {
 		t.Errorf("no file: config = %q, systemctl = %q", got, calls)
+	}
+}
+
+// Rocky / RHEL 9 with SELinux enforcing: the confined agent may not read
+// ordinary files until the boolean is on. It is set persistently, once.
+func TestTheAgentMayReadFilesUnderSELinux(t *testing.T) {
+	_, _, set := runAllowGuestFileReadsSELinux(t, "", "off")
+	if set != "-P virt_qemu_ga_read_nonsecurity_files on" {
+		t.Fatalf("setsebool calls = %q", set)
+	}
+	if _, _, set := runAllowGuestFileReadsSELinux(t, "", "on"); set != "" {
+		t.Errorf("already on: setsebool calls = %q", set)
 	}
 }
