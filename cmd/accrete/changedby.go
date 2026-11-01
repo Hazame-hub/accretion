@@ -101,7 +101,7 @@ func byKind(changes []provider.Change, kinds []string) *plan.ChangeAuthor {
 	for _, kind := range kinds {
 		c := newestOf(changes, func(c provider.Change) bool { return c.Kind == kind })
 		if c == nil {
-			return &plan.ChangeAuthor{Unknown: fmt.Sprintf("no %s change is recorded on this machine; Proxmox keeps none for a change made through its synchronous API, which the web UI may use", kind)}
+			return &plan.ChangeAuthor{Unknown: fmt.Sprintf("no %s change is recorded on this machine; the provider does not log every change (on some it keeps no record of a change applied at once)", kind)}
 		}
 		if c.Self {
 			return &plan.ChangeAuthor{Unknown: fmt.Sprintf("the last recorded %s change is accrete's own (%s at %s), so this one came after it and was not recorded",

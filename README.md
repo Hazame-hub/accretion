@@ -119,6 +119,7 @@ It holds no endpoint and no credential.
 | `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
 | `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
@@ -220,6 +221,27 @@ instances would be identical is refused.
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
 
+### Declare what already runs: `accrete init --from-cluster`
+
+```sh
+accrete init --from-cluster --provider proxmox --endpoint https://pve.example.lan:8006 \
+  --token-env ACCRETE_PROXMOX_TOKEN --verify-tls=false --name lab [--select '^web-'] [--template 9000]
+```
+
+It reads the cluster (GET requests only) and writes `env.yaml` and
+`accrete.state.json` for the VMs it finds, then runs `accrete plan` on them.
+Machines named `web-1` to `web-n` with the same size and settings become one
+resource with `count: n`; every other VM is a resource of its own. Each VM is
+recorded as adopted and tied to the SMBIOS UUID it carries now, so from then
+on it is planned, drift-checked and destroyed like a machine accrete built.
+
+- Nothing is guessed. A full clone does not record its template, so unless
+  `--template` is given (or the VM is a linked clone), `template_vmid` is left
+  as a variable (`template_<resource>`) and the plan says it is missing.
+- A VM with no SMBIOS UUID, or whose name is not a DNS label, is left out
+  with the reason printed. A stopped VM is declared `power: "off"`.
+- init never overwrites a file.
+
 ### Who changed it
 
 A line that says a machine was changed outside accrete (a size that drifted,
@@ -262,7 +284,9 @@ Also not done in v0.1:
   machine runs, carries its minted SMBIOS UUID, and has the declared cores and
   memory. No agent enrols and nothing inside the guest is checked. Importing
   the manifest and state into Sybil re-evaluates acceptance with an agent.
-- **Adopting machines that accrete did not build.**
+- **Adopting one machine into an existing manifest.** `accrete init
+  --from-cluster` declares and adopts what runs (see above), into a new
+  manifest.
 - **Providers other than Proxmox.**
 
 ## For provider authors
