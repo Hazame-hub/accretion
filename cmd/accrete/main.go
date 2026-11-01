@@ -270,9 +270,9 @@ func printPlan(w io.Writer, p apiPlan) {
 		}
 		if c := e.ChangedBy; c != nil {
 			if c.By != "" {
-				fmt.Fprintf(w, "             changed by %s at %s (%s)\n", c.By, c.At.Format(time.RFC3339), c.What)
+				_, _ = fmt.Fprintf(w, "             changed by %s at %s (%s)\n", c.By, c.At.Format(time.RFC3339), c.What)
 			} else {
-				fmt.Fprintf(w, "             changed by: unknown, %s\n", c.Unknown)
+				_, _ = fmt.Fprintf(w, "             changed by: unknown, %s\n", c.Unknown)
 			}
 		}
 		if e.Apply != "" {

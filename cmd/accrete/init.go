@@ -58,11 +58,11 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return 2
 	}
 	if !*fromCluster || *ptype == "" || *endpoint == "" || fs.NArg() > 0 {
-		fmt.Fprint(stderr, initUsage)
+		_, _ = fmt.Fprint(stderr, initUsage)
 		return 2
 	}
 	fail := func(format string, a ...any) int {
-		fmt.Fprintf(stderr, "accrete: "+format+"\n", a...)
+		_, _ = fmt.Fprintf(stderr, "accrete: "+format+"\n", a...)
 		return 2
 	}
 	var match *regexp.Regexp
@@ -100,7 +100,7 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if err != nil {
 		return fail("%v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	declarer, ok := session.(provider.Declarer)
 	if !ok {
 		return fail("provider %q cannot describe its machines as a manifest", *ptype)
@@ -110,7 +110,7 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return fail("the provider could not be read: %s", explainErr(driver, err))
 	}
 	if err != nil {
-		fmt.Fprintf(stdout, "note: the provider's listing is incomplete (%s); machines it did not list are not declared\n", explainErr(driver, err))
+		_, _ = fmt.Fprintf(stdout, "note: the provider's listing is incomplete (%s); machines it did not list are not declared\n", explainErr(driver, err))
 	}
 
 	var machines []provider.Declared
@@ -119,7 +119,7 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		case match != nil && !match.MatchString(d.Name):
 			continue
 		case d.Skip != "":
-			fmt.Fprintf(stdout, "left out %s (%s): %s\n", d.Name, d.Ref.ID, d.Skip)
+			_, _ = fmt.Fprintf(stdout, "left out %s (%s): %s\n", d.Name, d.Ref.ID, d.Skip)
 			continue
 		}
 		for k := range d.Unread {
@@ -156,16 +156,16 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if err := saveState(*statePath, state); err != nil {
 		return fail("state: %v", err)
 	}
-	fmt.Fprintf(stdout, "wrote %s (%d resources, %d machines) and %s\n", *file, len(env.Spec.Resources), len(machines), *statePath)
+	_, _ = fmt.Fprintf(stdout, "wrote %s (%d resources, %d machines) and %s\n", *file, len(env.Spec.Resources), len(machines), *statePath)
 	for _, u := range unread {
-		fmt.Fprintf(stdout, "to do: %s\n", u)
+		_, _ = fmt.Fprintf(stdout, "to do: %s\n", u)
 	}
 	for _, d := range machines {
 		for _, n := range d.Notes {
-			fmt.Fprintf(stdout, "note: %s: %s\n", d.Name, n)
+			_, _ = fmt.Fprintf(stdout, "note: %s: %s\n", d.Name, n)
 		}
 	}
-	fmt.Fprintln(stdout, "\nThe plan of what was written (machines that match it plan as unchanged):")
+	_, _ = fmt.Fprintln(stdout, "\nThe plan of what was written (machines that match it plan as unchanged):")
 	return run(ctx, []string{"plan", "-f", *file, "--state", *statePath}, stdin, stdout, stderr, getenv)
 }
 

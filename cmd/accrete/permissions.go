@@ -25,7 +25,7 @@ import (
 func permissions(ctx context.Context, env envmanifest.Environment, driver all.Driver, dir string, offline bool,
 	output, role string, timeout time.Duration, stdout, stderr io.Writer, getenv func(string) string) int {
 	fail := func(format string, a ...any) int {
-		fmt.Fprintf(stderr, "accrete: "+format+"\n", a...)
+		_, _ = fmt.Fprintf(stderr, "accrete: "+format+"\n", a...)
 		return 2
 	}
 	if driver.Permissions == nil {
@@ -59,7 +59,7 @@ func permissions(ctx context.Context, env envmanifest.Environment, driver all.Dr
 		if err != nil {
 			return fail("%v", err)
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		session = s
 	}
 	p := driver.Permissions(ctx, session, role, recipes)
@@ -84,7 +84,7 @@ func permissions(ctx context.Context, env envmanifest.Environment, driver all.Dr
 }
 
 func printPermissions(w io.Writer, envName string, machines int, offline bool, p provider.Permissions) {
-	fmt.Fprintf(w, "Environment %s: %d machine(s) to build. Role %s needs:\n\n", envName, machines, p.Role)
+	_, _ = fmt.Fprintf(w, "Environment %s: %d machine(s) to build. Role %s needs:\n\n", envName, machines, p.Role)
 	for _, g := range p.Grants {
 		status := "the token has them"
 		switch {
@@ -98,28 +98,28 @@ func printPermissions(w io.Writer, envName string, machines int, offline bool, p
 		if g.Optional {
 			status += " (optional)"
 		}
-		fmt.Fprintf(w, "  %s: %s\n      %s\n      %s\n", g.Path, g.Why, strings.Join(g.Privileges, " "), status)
+		_, _ = fmt.Fprintf(w, "  %s: %s\n      %s\n      %s\n", g.Path, g.Why, strings.Join(g.Privileges, " "), status)
 	}
 	switch {
 	case offline:
-		fmt.Fprintln(w, "\nThe token was not checked (--offline).")
+		_, _ = fmt.Fprintln(w, "\nThe token was not checked (--offline).")
 	case p.Lacking():
-		fmt.Fprintln(w, "\nThe token lacks privileges an apply needs: apply would stop part way. Grant them as below.")
+		_, _ = fmt.Fprintln(w, "\nThe token lacks privileges an apply needs: apply would stop part way. Grant them as below.")
 	case p.Unchecked():
-		fmt.Fprintln(w, "\nSome paths could not be checked, so this does not say the token is enough.")
+		_, _ = fmt.Fprintln(w, "\nSome paths could not be checked, so this does not say the token is enough.")
 	default:
-		fmt.Fprintln(w, "\nThe token has every privilege an apply needs.")
+		_, _ = fmt.Fprintln(w, "\nThe token has every privilege an apply needs.")
 	}
 	if len(p.Setup) > 0 {
-		fmt.Fprintln(w, "\nHow to grant them:")
+		_, _ = fmt.Fprintln(w, "\nHow to grant them:")
 		for _, s := range p.Setup {
-			fmt.Fprintf(w, "  %s\n", s)
+			_, _ = fmt.Fprintf(w, "  %s\n", s)
 		}
 	}
 	if len(p.Notes) > 0 {
-		fmt.Fprintln(w, "\nNotes:")
+		_, _ = fmt.Fprintln(w, "\nNotes:")
 		for _, n := range p.Notes {
-			fmt.Fprintf(w, "  - %s\n", n)
+			_, _ = fmt.Fprintf(w, "  - %s\n", n)
 		}
 	}
 }
