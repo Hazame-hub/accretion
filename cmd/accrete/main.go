@@ -174,6 +174,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	p := plan.Build(planned, world)
 	world.confirm(&p)
+	world.attribute(&p)
 	// A refused credential is a configuration error, not a plan whose
 	// machines are all unknown: nothing read after it is evidence.
 	if world.Refused != nil {
@@ -258,6 +259,13 @@ func printPlan(w io.Writer, p apiPlan) {
 		fmt.Fprintln(w, line)
 		for _, d := range e.Diff {
 			fmt.Fprintf(w, "             %s: %s -> %s\n", d.Input, show(d.From), show(d.To))
+		}
+		if c := e.ChangedBy; c != nil {
+			if c.By != "" {
+				fmt.Fprintf(w, "             changed by %s at %s (%s)\n", c.By, c.At.Format(time.RFC3339), c.What)
+			} else {
+				fmt.Fprintf(w, "             changed by: unknown, %s\n", c.Unknown)
+			}
 		}
 		if e.Apply != "" {
 			fmt.Fprintf(w, "             apply: %s (%s)\n", e.Apply, e.LifecycleBlueprint)

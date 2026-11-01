@@ -220,6 +220,25 @@ instances would be identical is refused.
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
 
+### Who changed it
+
+A line that says a machine was changed outside accrete (a size that drifted,
+or a machine powered off when the manifest says on) also says who made that
+change, read from Proxmox's task log:
+
+```
+  change   web/0  (pve1/qemu/100)  changed outside Sybil: memory_mb is 2048, the manifest declares 1024
+             memory_mb: 2048 -> 1024
+             changed by hamza@pve at 2026-11-01T13:00:00Z (qmconfig)
+```
+
+It never guesses. When the newest recorded change of that kind is accrete's
+own, when none is recorded, or when the newest power change does not explain
+the state (a shutdown typed inside the guest leaves no task), the line says
+`changed by: unknown` and why. Proxmox records no task for a config change
+made through its synchronous API, and lists others' tasks only to a token
+with `Sys.Audit` on the node. JSON output carries it as `changed_by`.
+
 ## What v0.1 does not do
 
 apply refuses these before sending anything, and exits 1:
