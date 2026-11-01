@@ -98,6 +98,10 @@ type Server struct {
 	failCode  int
 	// refuseToken answers every request 401.
 	refuseToken bool
+	// Privileges, when set, is what the token may do on each ACL path, as
+	// GET /access/permissions?path= answers it. Nil keeps the default answer
+	// (SDN.Audit on /sdn).
+	Privileges map[string][]string
 }
 
 // New starts a cluster holding template 9000 (rocky-9-cloud, stopped, with a
@@ -357,7 +361,18 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 	case strings.HasPrefix(p, "/nodes/pve1/tasks/"):
 		data(map[string]any{"status": "stopped", "exitstatus": "OK"})
 	case r.Method == http.MethodGet && p == "/access/permissions":
-		data(map[string]any{"/sdn": map[string]any{"SDN.Audit": 1}})
+		path := r.URL.Query().Get("path")
+		if s.Privileges == nil || path == "" {
+			data(map[string]any{"/sdn": map[string]any{"SDN.Audit": 1}})
+			break
+		}
+		// As Proxmox answers for one path: what the token may do there,
+		// propagation from parent paths applied.
+		have := map[string]any{}
+		for _, priv := range s.Privileges[path] {
+			have[priv] = 1
+		}
+		data(map[string]any{path: have})
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
 		data([]any{})
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":

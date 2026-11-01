@@ -57,8 +57,11 @@ You need:
    the machines lets `plan` show the guest agent's hostname and addresses;
    without it they are left out, and nothing else changes.
 
-   No built-in role covers all of these; make one with this list. A token
-   that misses one is refused with the privilege and path named.
+   No built-in role covers all of these. `accrete permissions -f env.yaml`
+   (step 3 first) prints the exact role your manifest needs, the paths to
+   grant it on, and the UI steps and `pveum` commands to do it, then checks
+   your token against it. A token that misses one is refused with the
+   privilege and path named.
 2. Put the token in an environment variable. It is never written into the
    manifest or the state:
 
@@ -116,6 +119,7 @@ It holds no endpoint and no credential.
 | `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
 | `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
 apply and destroy): how long the whole command may run.
