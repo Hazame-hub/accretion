@@ -4,6 +4,8 @@
 package all
 
 import (
+	"context"
+
 	"github.com/hazame-hub/accretion/plan"
 	"github.com/hazame-hub/accretion/provider"
 	"github.com/hazame-hub/accretion/provider/proxmox"
@@ -25,10 +27,15 @@ type Driver struct {
 	// Recipe says how a Writer builds an instance of a blueprint from its
 	// inputs, or why it cannot.
 	Recipe func(blueprint string, inputs map[string]any) (provider.Recipe, error)
+	// Permissions says what a credential needs to apply the recipes, as one
+	// role and the paths to grant it on; with a live session, also what the
+	// session's own credential lacks there now.
+	Permissions func(ctx context.Context, s provider.Session, role string, recipes []provider.Recipe) provider.Permissions
 }
 
 var drivers = map[string]Driver{
-	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe},
+	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
+		Permissions: proxmox.Permissions},
 }
 
 // Lookup returns the driver for a provider type.

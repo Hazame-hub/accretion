@@ -98,6 +98,31 @@ type Server struct {
 	failCode  int
 	// refuseToken answers every request 401.
 	refuseToken bool
+	// Privileges, when set, is what the token may do on each ACL path, as
+	// GET /access/permissions?path= answers it. Nil keeps the default answer
+	// (SDN.Audit on /sdn).
+	Privileges map[string][]string
+	// Tasks is the node's task log, oldest first, as GET /nodes/pve1/tasks
+	// lists it. The server's own mutations add nothing to it: a test writes
+	// the entries a change made by somebody would have left.
+	Tasks []Task
+}
+
+// Task is one entry of the task log.
+type Task struct {
+	Type  string // qmconfig, qmstop, ...
+	User  string // user@realm or user@realm!tokenid
+	VMID  int
+	Start time.Time
+	// Status is "OK" when empty.
+	Status string
+}
+
+// AddTask appends an entry to the task log.
+func (s *Server) AddTask(t Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Tasks = append(s.Tasks, t)
 }
 
 // New starts a cluster holding template 9000 (rocky-9-cloud, stopped, with a
@@ -354,10 +379,38 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			next++
 		}
 		data(strconv.Itoa(next))
+	case r.Method == http.MethodGet && p == "/nodes/pve1/tasks":
+		// The task log, newest first, for the vmid asked.
+		vmid := r.URL.Query().Get("vmid")
+		rows := []map[string]any{}
+		for i := len(s.Tasks) - 1; i >= 0; i-- {
+			t := s.Tasks[i]
+			if vmid != "" && strconv.Itoa(t.VMID) != vmid {
+				continue
+			}
+			status := t.Status
+			if status == "" {
+				status = "OK"
+			}
+			rows = append(rows, map[string]any{"type": t.Type, "user": t.User, "starttime": t.Start.Unix(),
+				"status": status, "id": strconv.Itoa(t.VMID), "node": "pve1"})
+		}
+		data(rows)
 	case strings.HasPrefix(p, "/nodes/pve1/tasks/"):
 		data(map[string]any{"status": "stopped", "exitstatus": "OK"})
 	case r.Method == http.MethodGet && p == "/access/permissions":
-		data(map[string]any{"/sdn": map[string]any{"SDN.Audit": 1}})
+		path := r.URL.Query().Get("path")
+		if s.Privileges == nil || path == "" {
+			data(map[string]any{"/sdn": map[string]any{"SDN.Audit": 1}})
+			break
+		}
+		// As Proxmox answers for one path: what the token may do there,
+		// propagation from parent paths applied.
+		have := map[string]any{}
+		for _, priv := range s.Privileges[path] {
+			have[priv] = 1
+		}
+		data(map[string]any{path: have})
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
 		data([]any{})
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":

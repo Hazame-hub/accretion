@@ -5,6 +5,8 @@
 //	accrete plan    -f env.yaml [--state accrete.state.json] [-o text|json]
 //	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
 //	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
+//	accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
+//	accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
 //
 // plan reads and never writes: it sends the provider GET requests only, no
 // machine is changed, and the state file is not rewritten. The plan comes
@@ -15,6 +17,10 @@
 // apply and destroy print the same plan, ask before doing anything, and act
 // on its lines one machine at a time, writing the state after every step so
 // an interrupted run resumes where it stopped. See apply.go.
+//
+// permissions prints the one role the token needs to apply the manifest and
+// the paths to grant it on, and checks the token against them. See
+// permissions.go.
 //
 // The token comes from the file or environment variable the manifest's
 // spec.provider names. It is never printed, logged or written anywhere.
@@ -44,6 +50,8 @@ Usage:
   accrete plan    -f env.yaml [--state FILE] [-o text|json] [--offline]
   accrete apply   -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
   accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
+  accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
+  accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -58,10 +66,18 @@ for "yes" first, unless --auto-approve. A recorded machine the provider no
 longer lists keeps its record (the token may just not see it) unless
 --forget-gone.
 
+permissions prints the role the token needs to apply the manifest, the
+paths to grant it on and how, and checks what the token has there now
+(GET requests only; --offline checks nothing).
+
+init --from-cluster writes a manifest and a state for the machines the
+provider already runs, then plans them (accrete init -h).
+
 Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
 declined, or a machine failed or was not done, 2 accrete could not plan or
 start (bad flags, bad manifest or state, no token or a refused one, a state
-locked by another run).
+locked by another run). permissions exits 1 when the token lacks a required
+privilege and 3 when some could not be checked.
 `
 
 func main() {
@@ -69,17 +85,20 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
-	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy") {
+	if len(args) > 0 && args[0] == "init" {
+		return runInit(ctx, args[1:], stdin, stdout, stderr, getenv)
+	}
+	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy" && args[0] != "permissions") {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
 	cmd := args[0]
-	writes := cmd != "plan"
+	writes := cmd == "apply" || cmd == "destroy"
 	fs := flag.NewFlagSet("accrete "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	file := fs.String("f", "", "the Environment manifest (YAML)")
 	statePath := fs.String("state", "", "the state file (default: accrete.state.json beside the manifest)")
-	output, offline, autoApprove, forgetGone := new(string), new(bool), new(bool), new(bool)
+	output, offline, autoApprove, forgetGone, role := new(string), new(bool), new(bool), new(bool), new(string)
 	defaultTimeout := 2 * time.Minute
 	if writes {
 		autoApprove = fs.Bool("auto-approve", false, "do not ask before acting")
@@ -88,6 +107,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	} else {
 		output = fs.String("o", "text", "output: text or json")
 		offline = fs.Bool("offline", false, "do not contact the provider; recorded machines plan as unknown")
+	}
+	if cmd == "permissions" {
+		role = fs.String("role", "", "the role's name (default: accrete- and the environment's name)")
 	}
 	timeout := fs.Duration("timeout", defaultTimeout, "how long the whole command may take")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -121,6 +143,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *statePath == "" {
 		*statePath = filepath.Join(dir, "accrete.state.json")
 	}
+	if cmd == "permissions" {
+		return permissions(ctx, env, driver, dir, *offline, *output, *role, *timeout, stdout, stderr, getenv)
+	}
 	if writes {
 		lock, err := lockState(*statePath, func(msg string) { fmt.Fprintf(stderr, "accrete: %s\n", msg) })
 		if err != nil {
@@ -146,20 +171,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *offline {
 		world.notAsked = "--offline"
 	} else {
-		token, err := ref.Token(dir, getenv, stderr)
+		var err error
+		session, err = connect(ctx, ref, dir, driver, getenv, stderr)
 		if err != nil {
 			return fail("%s: %v", *file, err)
-		}
-		if driver.CheckToken != nil {
-			if err := driver.CheckToken(token); err != nil {
-				return fail("%s: spec.provider: %v", *file, err)
-			}
-		}
-		session, err = driver.Provider.Connect(ctx, provider.Config{
-			Endpoint: ref.Endpoint, Params: map[string]any{"api_token": token}, VerifyTLS: ref.VerifyTLS,
-		})
-		if err != nil {
-			return fail("%s: spec.provider: %v", *file, err)
 		}
 		defer session.Close()
 		world.session = session
@@ -167,6 +182,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	p := plan.Build(planned, world)
 	world.confirm(&p)
+	world.attribute(&p)
 	// A refused credential is a configuration error, not a plan whose
 	// machines are all unknown: nothing read after it is evidence.
 	if world.Refused != nil {
@@ -182,6 +198,27 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	a.gone, a.forgetGone = world.GoneDeletes, *forgetGone
 	return a.run(p, world.Notes)
+}
+
+// connect opens a session with the provider the manifest names, with the
+// token its spec.provider points at. The token is never printed.
+func connect(ctx context.Context, ref *envmanifest.ProviderRef, dir string, driver all.Driver, getenv func(string) string, stderr io.Writer) (provider.Session, error) {
+	token, err := ref.Token(dir, getenv, stderr)
+	if err != nil {
+		return nil, err
+	}
+	if driver.CheckToken != nil {
+		if err := driver.CheckToken(token); err != nil {
+			return nil, fmt.Errorf("spec.provider: %w", err)
+		}
+	}
+	session, err := driver.Provider.Connect(ctx, provider.Config{
+		Endpoint: ref.Endpoint, Params: map[string]any{"api_token": token}, VerifyTLS: ref.VerifyTLS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("spec.provider: %w", err)
+	}
+	return session, nil
 }
 
 // apiPlan is the API's plan answer for one Environment: the plan, its summary
@@ -230,6 +267,13 @@ func printPlan(w io.Writer, p apiPlan) {
 		fmt.Fprintln(w, line)
 		for _, d := range e.Diff {
 			fmt.Fprintf(w, "             %s: %s -> %s\n", d.Input, show(d.From), show(d.To))
+		}
+		if c := e.ChangedBy; c != nil {
+			if c.By != "" {
+				_, _ = fmt.Fprintf(w, "             changed by %s at %s (%s)\n", c.By, c.At.Format(time.RFC3339), c.What)
+			} else {
+				_, _ = fmt.Fprintf(w, "             changed by: unknown, %s\n", c.Unknown)
+			}
 		}
 		if e.Apply != "" {
 			fmt.Fprintf(w, "             apply: %s (%s)\n", e.Apply, e.LifecycleBlueprint)

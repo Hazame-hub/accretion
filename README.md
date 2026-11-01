@@ -57,8 +57,11 @@ You need:
    the machines lets `plan` show the guest agent's hostname and addresses;
    without it they are left out, and nothing else changes.
 
-   No built-in role covers all of these; make one with this list. A token
-   that misses one is refused with the privilege and path named.
+   No built-in role covers all of these. `accrete permissions -f env.yaml`
+   (step 3 first) prints the exact role your manifest needs, the paths to
+   grant it on, and the UI steps and `pveum` commands to do it, then checks
+   your token against it. A token that misses one is refused with the
+   privilege and path named.
 2. Put the token in an environment variable. It is never written into the
    manifest or the state:
 
@@ -116,6 +119,8 @@ It holds no endpoint and no credential.
 | `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
 | `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
+| `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
 apply and destroy): how long the whole command may run.
@@ -216,6 +221,46 @@ instances would be identical is refused.
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
 
+### Declare what already runs: `accrete init --from-cluster`
+
+```sh
+accrete init --from-cluster --provider proxmox --endpoint https://pve.example.lan:8006 \
+  --token-env ACCRETE_PROXMOX_TOKEN --verify-tls=false --name lab [--select '^web-'] [--template 9000]
+```
+
+It reads the cluster (GET requests only) and writes `env.yaml` and
+`accrete.state.json` for the VMs it finds, then runs `accrete plan` on them.
+Machines named `web-1` to `web-n` with the same size and settings become one
+resource with `count: n`; every other VM is a resource of its own. Each VM is
+recorded as adopted and tied to the SMBIOS UUID it carries now, so from then
+on it is planned, drift-checked and destroyed like a machine accrete built.
+
+- Nothing is guessed. A full clone does not record its template, so unless
+  `--template` is given (or the VM is a linked clone), `template_vmid` is left
+  as a variable (`template_<resource>`) and the plan says it is missing.
+- A VM with no SMBIOS UUID, or whose name is not a DNS label, is left out
+  with the reason printed. A stopped VM is declared `power: "off"`.
+- init never overwrites a file.
+
+### Who changed it
+
+A line that says a machine was changed outside accrete (a size that drifted,
+or a machine powered off when the manifest says on) also says who made that
+change, read from Proxmox's task log:
+
+```
+  change   web/0  (pve1/qemu/100)  changed outside Sybil: memory_mb is 2048, the manifest declares 1024
+             memory_mb: 2048 -> 1024
+             changed by hamza@pve at 2026-11-01T13:00:00Z (qmconfig)
+```
+
+It never guesses. When the newest recorded change of that kind is accrete's
+own, when none is recorded, or when the newest power change does not explain
+the state (a shutdown typed inside the guest leaves no task), the line says
+`changed by: unknown` and why. Proxmox records no task for a config change
+made through its synchronous API, and lists others' tasks only to a token
+with `Sys.Audit` on the node. JSON output carries it as `changed_by`.
+
 ## What v0.1 does not do
 
 apply refuses these before sending anything, and exits 1:
@@ -239,7 +284,9 @@ Also not done in v0.1:
   machine runs, carries its minted SMBIOS UUID, and has the declared cores and
   memory. No agent enrols and nothing inside the guest is checked. Importing
   the manifest and state into Sybil re-evaluates acceptance with an agent.
-- **Adopting machines that accrete did not build.**
+- **Adopting one machine into an existing manifest.** `accrete init
+  --from-cluster` declares and adopts what runs (see above), into a new
+  manifest.
 - **Providers other than Proxmox.**
 
 ## For provider authors
