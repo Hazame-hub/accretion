@@ -34,6 +34,7 @@ var (
 	privsNode        = []string{"Sys.Audit"}
 	privsBridge      = []string{"SDN.Use"}
 	privsGuestAgent  = []string{"VM.GuestAgent.Audit"}
+	privsSDNListing  = []string{"SDN.Audit"}
 )
 
 // Permissions says what a token needs to apply and destroy the machines the
@@ -105,6 +106,10 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 	}
 	if len(recipes) > 0 {
 		b.add("/vms", privsGuestAgent, "optional: let plan show each machine's hostname and addresses from the guest agent (on Proxmox VE 8 the privilege is VM.Monitor)", true)
+		// Without it Proxmox lists the SDN as empty instead of refusing, so
+		// every plan warns that its listing is incomplete (seen on the lab
+		// 2026-11-02 with a token built from this list).
+		b.add("/sdn", privsSDNListing, "optional: let plan list the SDN zones and networks; without it every plan warns that its listing is incomplete", true)
 	}
 
 	out.Grants = b.list()
@@ -196,7 +201,7 @@ func setup(p provider.Permissions) []string {
 	var optional []string
 	for _, g := range p.Grants {
 		if g.Optional {
-			optional = append(optional, g.Privileges...)
+			optional = append(optional, fmt.Sprintf("Optional: grant %s on %s (%s).", strings.Join(g.Privileges, ", "), g.Path, strings.TrimPrefix(g.Why, "optional: ")))
 			continue
 		}
 		if !seen[g.Path] {
@@ -232,9 +237,7 @@ func setup(p provider.Permissions) []string {
 	for _, path := range paths {
 		out = append(out, fmt.Sprintf("  pveum acl modify %s --tokens '%s' --roles %s", path, token, p.Role))
 	}
-	if len(optional) > 0 {
-		out = append(out, fmt.Sprintf("Optional: add %s to the role (VM.Monitor on Proxmox VE 8) so plan shows guest hostnames and addresses.", strings.Join(optional, ", ")))
-	}
+	out = append(out, optional...)
 	return out
 }
 

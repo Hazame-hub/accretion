@@ -56,7 +56,9 @@ You need:
 
    Optional: `VM.GuestAgent.Audit` (Proxmox VE 9) or `VM.Monitor` (VE 8) on
    the machines lets `plan` show the guest agent's hostname and addresses;
-   without it they are left out, and nothing else changes.
+   without it they are left out, and nothing else changes. Optional too:
+   `SDN.Audit` on `/sdn`, without which Proxmox lists the SDN as empty and
+   every `plan` warns that its listing is incomplete.
 
    No built-in role covers all of these. `accrete permissions -f env.yaml`
    (step 3 first) prints the exact role your manifest needs, the paths to

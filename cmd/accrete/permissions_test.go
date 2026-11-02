@@ -19,6 +19,7 @@ func fullGrants() map[string][]string {
 		"/storage/local-lvm":            {"Datastore.AllocateSpace", "Datastore.Audit"},
 		"/nodes/pve1":                   {"Sys.Audit"},
 		"/sdn/zones/localnetwork/vmbr0": {"SDN.Use"},
+		"/sdn":                          {"SDN.Audit"},
 	}
 }
 
@@ -49,6 +50,8 @@ func TestPermissionsNamesEveryPathAndFindsNothingMissing(t *testing.T) {
 		"pveum role add accrete-lab",
 		"pveum acl modify /vms --tokens '<user@realm!tokenid>' --roles accrete-lab",
 		"Datacenter → Permissions → Roles → Create",
+		"Optional: grant SDN.Audit on /sdn (let plan list the SDN zones and networks",
+		"Optional: grant VM.GuestAgent.Audit on /vms",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -91,6 +94,20 @@ func TestPermissionsOptionalGuestAgentNeverFails(t *testing.T) {
 	}
 }
 
+func TestPermissionsOptionalSDNListingNeverFails(t *testing.T) {
+	l := newApplyLab(t, "")
+	g := fullGrants()
+	delete(g, "/sdn")
+	l.pve.Privileges = g
+	out, code := l.accrete("", "permissions")
+	if code != 0 {
+		t.Fatalf("exit %d, want 0 (the SDN listing grant is optional):\n%s", code, out)
+	}
+	if !strings.Contains(out, "the token lacks SDN.Audit (optional)") {
+		t.Errorf("the optional grant is not reported:\n%s", out)
+	}
+}
+
 func TestPermissionsOfflineAsksNothing(t *testing.T) {
 	l := newApplyLab(t, "")
 	out, code := l.accrete("", "permissions", "--offline", "--role", "web-builders")
@@ -122,7 +139,7 @@ func TestPermissionsJSON(t *testing.T) {
 		t.Fatalf("role %q, %d grants", p.Role, len(p.Grants))
 	}
 	for _, priv := range p.Privileges {
-		if priv == "VM.GuestAgent.Audit" {
+		if priv == "VM.GuestAgent.Audit" || priv == "SDN.Audit" {
 			t.Error("an optional privilege is in the role's required list")
 		}
 	}
