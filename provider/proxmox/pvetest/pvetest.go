@@ -392,7 +392,11 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			if status == "" {
 				status = "OK"
 			}
-			rows = append(rows, map[string]any{"type": t.Type, "user": t.User, "starttime": t.Start.Unix(),
+			// As Proxmox lists it: "user" names the user only, the token
+			// is in the UPID.
+			user, _, _ := strings.Cut(t.User, "!")
+			upid := fmt.Sprintf("UPID:pve1:00001234:00005678:%08X:%s:%d:%s:", t.Start.Unix(), t.Type, t.VMID, t.User)
+			rows = append(rows, map[string]any{"type": t.Type, "user": user, "upid": upid, "starttime": t.Start.Unix(),
 				"status": status, "id": strconv.Itoa(t.VMID), "node": "pve1"})
 		}
 		data(rows)

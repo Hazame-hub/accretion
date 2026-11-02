@@ -49,6 +49,8 @@ func (s *session) Changes(ctx context.Context, ref provider.Ref) ([]provider.Cha
 		StartTime json.RawMessage `json:"starttime"`
 		Status    string          `json:"status"`
 		ID        string          `json:"id"`
+		UPID      string          `json:"upid"`
+		TokenID   string          `json:"tokenid"`
 	}
 	q := url.Values{"vmid": {vmid}, "limit": {"500"}, "source": {"all"}}
 	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/tasks?%s", url.PathEscape(node), q.Encode()), &rows); err != nil {
@@ -65,16 +67,48 @@ func (s *session) Changes(ctx context.Context, ref provider.Ref) ([]provider.Cha
 		if !ok {
 			continue
 		}
+		by := taskAuthor(r.User, r.UPID, r.TokenID)
 		out = append(out, provider.Change{
-			At: time.Unix(int64(ts), 0).UTC(), By: r.User, Kind: k.kind, What: r.Type, PowerState: k.power,
+			At: time.Unix(int64(ts), 0).UTC(), By: by, Kind: k.kind, What: r.Type, PowerState: k.power,
 			// A running task has no status yet; any finished one other than
 			// OK (or a warning) failed.
 			Failed: r.Status != "" && r.Status != "OK" && !strings.HasPrefix(r.Status, "WARNINGS"),
-			Self:   self != "" && r.User == self,
+			Self:   isSelf(by, self),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
 	return out, nil
+}
+
+// taskAuthor is who made a task, naming the token when one did. The task
+// list's "user" field names only the user (accrete@pve) even when a token of
+// it ran the task; the token is in the UPID's user field
+// (UPID:node:pid:pstart:starttime:type:id:user@realm!tokenid:), and newer
+// releases also give it as "tokenid". Seen on PVE 9.1 on 2026-11-02, where
+// comparing "user" with the token blamed accrete's own task on its user.
+func taskAuthor(user, upid, tokenid string) string {
+	if parts := strings.Split(upid, ":"); len(parts) >= 8 && parts[0] == "UPID" && parts[7] != "" {
+		return parts[7]
+	}
+	if tokenid != "" && !strings.Contains(user, "!") {
+		return user + "!" + tokenid
+	}
+	return user
+}
+
+// isSelf says whether a task's author is accrete's own token. When the
+// record names only the token's user, it may be accrete or the person behind
+// that user; it is taken as accrete's own, so that the change is reported
+// unknown rather than blamed on somebody.
+func isSelf(author, self string) bool {
+	if self == "" || author == "" {
+		return false
+	}
+	if author == self {
+		return true
+	}
+	user, _, _ := strings.Cut(self, "!")
+	return !strings.Contains(author, "!") && author == user
 }
 
 // tokenID is user@realm!tokenid out of the Authorization header value, as
