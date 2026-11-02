@@ -56,6 +56,9 @@ type Guest struct {
 	Status   string // running | stopped | paused
 	Template bool
 	Config   map[string]any
+	// Pending holds config changes the running guest takes at its next
+	// start: GET config shows them applied, status/current does not.
+	Pending map[string]any
 	// cloning counts the reads that still see the guest being cloned.
 	cloning int
 }
@@ -249,6 +252,18 @@ func (s *Server) SetConfig(vmid int, key string, v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Guests[vmid].Config[key] = v
+}
+
+// SetPending holds a config change for the guest's next start, as Proxmox
+// does for a memory change on a running VM without memory hotplug.
+func (s *Server) SetPending(vmid int, key string, v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.Guests[vmid]
+	if g.Pending == nil {
+		g.Pending = map[string]any{}
+	}
+	g.Pending[key] = v
 }
 
 const upid = "UPID:pve1:00001234:00005678:65000000:task:0:accrete@pve!test:"
@@ -483,7 +498,14 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 			data(map[string]any{"lock": "clone", "digest": "0"})
 			return
 		}
-		data(g.Config)
+		cfg := map[string]any{}
+		for k, v := range g.Config {
+			cfg[k] = v
+		}
+		for k, v := range g.Pending {
+			cfg[k] = v
+		}
+		data(cfg)
 	case r.Method == http.MethodGet && rest == "/status/current":
 		data(map[string]any{"status": statusOf(g), "qmpstatus": g.Status, "maxmem": memBytes(g)})
 	case r.Method == http.MethodGet && strings.HasPrefix(rest, "/agent/"):

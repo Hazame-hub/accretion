@@ -229,6 +229,9 @@ type InputDiff struct {
 	Input string `json:"input"`
 	From  any    `json:"from,omitempty"`
 	To    any    `json:"to,omitempty"`
+	// Pending says From is not what the machine runs with yet but what it
+	// was set to for its next restart.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Plan is the whole answer for one Environment.

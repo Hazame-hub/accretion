@@ -266,7 +266,11 @@ func printPlan(w io.Writer, p apiPlan) {
 		}
 		fmt.Fprintln(w, line)
 		for _, d := range e.Diff {
-			fmt.Fprintf(w, "             %s: %s -> %s\n", d.Input, show(d.From), show(d.To))
+			from := show(d.From)
+			if d.Pending {
+				from += " (pending, at next restart)"
+			}
+			_, _ = fmt.Fprintf(w, "             %s: %s -> %s\n", d.Input, from, show(d.To))
 		}
 		if c := e.ChangedBy; c != nil {
 			if c.By != "" {
