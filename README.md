@@ -44,8 +44,9 @@ You need:
    Proxmox's permission paths allow):
    - on the machines (`/vms`): `VM.Allocate`, `VM.Clone`, `VM.Audit`,
      `VM.PowerMgmt`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`,
-     `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM` and
-     `VM.Config.HWType`;
+     `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM`,
+     `VM.Config.Cloudinit` (Proxmox checks it when the seed goes on a clone of
+     a template that has a cloud-init drive) and `VM.Config.HWType`;
    - on the disk storage: `Datastore.Audit` and `Datastore.AllocateSpace`;
    - on the seed storage (`snippet_storage`): `Datastore.Audit`,
      `Datastore.AllocateTemplate` (to upload the seed ISO) and

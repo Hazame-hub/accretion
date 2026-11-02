@@ -18,14 +18,16 @@ import (
 // VMID, Datastore.AllocateSpace where the template's disks are copied), the
 // config POST that sets size, CPU, NIC and SMBIOS (VM.Config.*), the seed ISO
 // upload, attach and removal (Datastore.AllocateTemplate and Datastore.Allocate
-// on the seed storage, VM.Config.CDROM), power (VM.PowerMgmt), the delete
+// on the seed storage, VM.Config.CDROM, and VM.Config.Cloudinit: Proxmox checks
+// it when ide2 is written on a clone whose template carries a cloud-init
+// drive, as rocky-9-cloud does; seen on the lab 2026-11-02), power (VM.PowerMgmt), the delete
 // (VM.Allocate), and the plan's capacity read (Sys.Audit on the node). The new
 // machine's VMID is not known before apply, so its grants are on /vms.
 var (
 	privsTemplate = []string{"VM.Audit", "VM.Clone"}
 	privsMachines = []string{
-		"VM.Allocate", "VM.Audit", "VM.Config.CDROM", "VM.Config.CPU", "VM.Config.Disk",
-		"VM.Config.HWType", "VM.Config.Memory", "VM.Config.Network", "VM.Config.Options", "VM.PowerMgmt",
+		"VM.Allocate", "VM.Audit", "VM.Config.CDROM", "VM.Config.CPU", "VM.Config.Cloudinit",
+		"VM.Config.Disk", "VM.Config.HWType", "VM.Config.Memory", "VM.Config.Network", "VM.Config.Options", "VM.PowerMgmt",
 	}
 	privsDiskStorage = []string{"Datastore.AllocateSpace", "Datastore.Audit"}
 	privsSeedStorage = []string{"Datastore.Allocate", "Datastore.AllocateTemplate", "Datastore.Audit"}

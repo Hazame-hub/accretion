@@ -13,7 +13,7 @@ import (
 func fullGrants() map[string][]string {
 	return map[string][]string{
 		"/vms/9000": {"VM.Audit", "VM.Clone"},
-		"/vms": {"VM.Allocate", "VM.Audit", "VM.Config.CDROM", "VM.Config.CPU", "VM.Config.Disk", "VM.Config.HWType",
+		"/vms": {"VM.Allocate", "VM.Audit", "VM.Config.CDROM", "VM.Config.CPU", "VM.Config.Cloudinit", "VM.Config.Disk", "VM.Config.HWType",
 			"VM.Config.Memory", "VM.Config.Network", "VM.Config.Options", "VM.PowerMgmt", "VM.GuestAgent.Audit"},
 		"/storage/local":                {"Datastore.Allocate", "Datastore.AllocateTemplate", "Datastore.Audit"},
 		"/storage/local-lvm":            {"Datastore.AllocateSpace", "Datastore.Audit"},
