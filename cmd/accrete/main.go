@@ -183,6 +183,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	p := plan.Build(planned, world)
 	world.confirm(&p)
 	world.attribute(&p)
+	if cmd == "destroy" {
+		// The planner says why from the manifest's side; destroy plans as if
+		// it declared nothing, so say what destroy is doing instead.
+		for i := range p.Entries {
+			if p.Entries[i].Action == plan.ActionDelete {
+				p.Entries[i].Reason = "destroy removes every machine this state records"
+			}
+		}
+	}
 	// A refused credential is a configuration error, not a plan whose
 	// machines are all unknown: nothing read after it is evidence.
 	if world.Refused != nil {

@@ -500,3 +500,14 @@ func TestDestroyRetiresAMachineAlreadyGone(t *testing.T) {
 		t.Errorf("%d still recorded", n)
 	}
 }
+
+func TestDestroySaysWhyItRemovesEachMachine(t *testing.T) {
+	l := newApplyLab(t, "")
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	out, _ := l.accrete("", "destroy", "--auto-approve")
+	if !strings.Contains(out, "destroy removes every machine this state records") || strings.Contains(out, "no longer declares") {
+		t.Errorf("destroy's reason:\n%s", out)
+	}
+}

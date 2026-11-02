@@ -307,6 +307,7 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 		Ref:      refOf(node, vmid),
 		Identity: provider.Identity{SMBIOSUUID: strings.ToLower(req.MintUUID), HypervisorGuestID: vmid, MACs: []string{}, IPs: []string{}},
 		Applied:  cloned || shaped || grown,
+		Found:    !cloned,
 	}, nil
 }
 

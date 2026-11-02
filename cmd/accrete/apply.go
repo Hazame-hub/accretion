@@ -320,7 +320,11 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("clone: %w", err)
 			}
 			r.ResourceRefID, r.Step = m.Ref.ID, stepGuestInit
-			a.printf("  cloned as %s, SMBIOS UUID %s\n", m.Ref.ID, r.MintedUUID)
+			if !m.Found {
+				a.printf("  cloned as %s, SMBIOS UUID %s\n", m.Ref.ID, r.MintedUUID)
+			} else {
+				a.printf("  found its earlier clone %s by its owner mark, SMBIOS UUID %s; not cloned again\n", m.Ref.ID, r.MintedUUID)
+			}
 		case stepGuestInit:
 			ud, err := userData(rec)
 			if err != nil {

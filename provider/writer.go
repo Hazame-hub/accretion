@@ -87,6 +87,9 @@ type Machine struct {
 	Identity Identity
 	// Applied is false when the clone was found already done.
 	Applied bool
+	// Found is true when the machine was not cloned by this call but found,
+	// by its owner mark, from an earlier attempt.
+	Found bool
 }
 
 // Seed is a cloud-init NoCloud seed. The provider places the bytes; what
