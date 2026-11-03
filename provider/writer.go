@@ -35,6 +35,36 @@ type Writer interface {
 	Delete(ctx context.Context, m Target, opts DeleteOptions) (Deleted, error)
 }
 
+// Resizer is a Writer that can change a machine's size in place. Optional,
+// found by type assertion like Writer. It keeps Writer's rules: identity is
+// the guard, a repeat is a no-op, and failures are refused, failed or
+// unknown.
+type Resizer interface {
+	Resize(ctx context.Context, m Target, want Size) (Resized, error)
+}
+
+// Size is what Resize sets. Zero leaves a value alone; DiskGB only ever grows
+// the boot disk.
+type Size struct {
+	Cores    int
+	MemoryMB int
+	DiskGB   int
+	// Restart restarts a running machine when a value it set takes effect
+	// only at the next start (on Proxmox, cores or memory without hotplug).
+	Restart bool
+}
+
+// Resized says what Resize did.
+type Resized struct {
+	// Applied is false when the machine already had the size.
+	Applied bool
+	// Restarted is true when the machine was restarted for the change.
+	Restarted bool
+	// Pending is true when a value is set but the machine does not run with
+	// it yet: it was not restarted (Size.Restart false, or not running).
+	Pending bool
+}
+
 // Target is a machine a verb may touch: where it is, and the identity it must
 // still have.
 type Target struct {

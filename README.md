@@ -132,6 +132,12 @@ apply and destroy): how long the whole command may run.
 - **create:** clone the template, seed cloud-init, start the machine, confirm it, record it.
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
+- **change** of cores, memory or disk size (the manifest changed, or the
+  machine was changed outside accrete, or such a change waits for its next
+  restart): set it in place, restart the machine when the change needs that
+  (on Proxmox, cores or memory without hotplug), confirm what it runs with,
+  then record it. The disk only grows; a shrink is refused at plan time. A
+  stopped machine is not changed: start it first.
 - **any other change:** not done. It is reported and the exit status is 1.
 - **unknown:** a machine an earlier apply left half-built is finished (or,
   if the manifest no longer declares it, removed). A machine the manifest no
@@ -280,8 +286,9 @@ apply refuses these before sending anything, and exits 1:
 
 Also not done in v0.1:
 
-- **Changing a built machine's size or inputs.** Such a line plans as `change`
-  and is reported as not done. Destroy and re-apply, or wait for Resize.
+- **Changing a built machine's other inputs** (template, network, hostname,
+  bootstrap). Such a line plans as `change` and is reported as not done.
+  Destroy and re-apply.
 - **Cross-node clones.** A machine is cloned on its template's node.
 - **Agents.** "Accepted" in accrete means what the provider observes: the
   machine runs, carries its minted SMBIOS UUID, and has the declared cores and

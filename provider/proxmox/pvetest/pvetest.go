@@ -63,6 +63,14 @@ type Guest struct {
 	cloning int
 }
 
+// applyPending is a start: the guest takes its pending config.
+func (g *Guest) applyPending() {
+	for k, v := range g.Pending {
+		g.Config[k] = v
+	}
+	g.Pending = nil
+}
+
 // seen is one read of the guest; it reports whether the clone is still
 // running for this read.
 func (g *Guest) seen() bool {
@@ -502,8 +510,10 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 		for k, v := range g.Config {
 			cfg[k] = v
 		}
-		for k, v := range g.Pending {
-			cfg[k] = v
+		if r.URL.Query().Get("current") != "1" {
+			for k, v := range g.Pending {
+				cfg[k] = v
+			}
 		}
 		data(cfg)
 	case r.Method == http.MethodGet && rest == "/status/current":
@@ -541,6 +551,19 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				}
 				continue
 			}
+			// As Proxmox does without cpu or memory hotplug (its default):
+			// a running guest takes the new value at its next start.
+			if g.Status != "stopped" && (k == "cores" || k == "memory") && !strings.Contains(fmt.Sprint(g.Config["hotplug"]), map[string]string{"cores": "cpu", "memory": "memory"}[k]) {
+				if g.Pending == nil {
+					g.Pending = map[string]any{}
+				}
+				g.Pending[k] = form.Get(k)
+				if fmt.Sprint(g.Config[k]) == form.Get(k) {
+					delete(g.Pending, k)
+				}
+				continue
+			}
+			delete(g.Pending, k)
 			g.Config[k] = form.Get(k)
 		}
 		data(nil)
@@ -560,7 +583,14 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				fail(http.StatusInternalServerError, "VM is paused")
 				return
 			}
+			g.applyPending()
 			g.Status = "running"
+		case "reboot":
+			if g.Status != "running" {
+				fail(http.StatusInternalServerError, "VM is not running")
+				return
+			}
+			g.applyPending()
 		case "stop", "shutdown":
 			g.Status = "stopped"
 		default:

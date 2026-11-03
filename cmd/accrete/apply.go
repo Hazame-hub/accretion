@@ -23,6 +23,8 @@ import (
 //	unknown, half-built by an earlier run  resume it from its step
 //	delete with apply: destroy             delete (stopping it first), retire
 //	change with apply: power               power it
+//	change with apply: reconfigure         resize in place (restarting it when
+//	                                       the change needs that), confirm, record
 //	change, anything else                  not done, said; exit 1
 //	unknown, no-op                         untouched
 //
@@ -124,6 +126,18 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 			steps = append(steps, step{"finish " + name + " (half-built by an earlier apply)", func() error { return a.build(id, rec) }})
 		case e.Action == plan.ActionDelete && e.Apply == plan.ApplyDestroy:
 			steps = append(steps, step{"delete " + name + " (" + e.ResourceRefID + ")", func() error { return a.delete(e) }})
+		case e.Action == plan.ActionChange && e.Apply == plan.ApplyReconfigure && a.cmd == "apply":
+			rz, ok := a.writer.(provider.Resizer)
+			if !ok {
+				notDone = append(notDone, fmt.Sprintf("%s %s: the provider cannot change a machine's size in place", e.Action, name))
+				continue
+			}
+			rec, err := a.buildable(e.Blueprint, e.Inputs)
+			if err != nil {
+				refuse("%s: %v", name, err)
+				continue
+			}
+			steps = append(steps, step{"change " + name + " (" + e.ResourceRefID + ")", func() error { return a.resize(rz, e, rec) }})
 		case e.Action == plan.ActionChange && e.Apply == plan.ApplyPower:
 			steps = append(steps, step{"power " + e.Power + " " + name, func() error { return a.power(e) }})
 		case e.Action == plan.ActionUnknown && e.RealizationID != nil && a.gone[*e.RealizationID] && a.forgetGone:
@@ -517,6 +531,71 @@ func (a *applier) power(e plan.Entry) error {
 		return fmt.Errorf("power: %w", err)
 	}
 	a.printf("  %s\n", res.State)
+	return nil
+}
+
+// resize changes a recorded machine's size in place, restarting it when the
+// change needs that (the reconfigure blueprint's promise), then confirms what
+// it runs with before recording the new inputs. A change that is not
+// confirmed leaves the record as it was, so the next plan shows it again.
+func (a *applier) resize(rz provider.Resizer, e plan.Entry, rec provider.Recipe) error {
+	r, err := a.realization(e.RealizationID)
+	if err != nil {
+		return err
+	}
+	target := provider.Target{Ref: provider.Ref{Kind: provider.KindVM, ID: r.ResourceRefID}, ExpectUUID: r.MintedUUID, Name: e.BuiltName}
+	shape := rec.Clone.Shape
+	res, err := rz.Resize(a.ctx, target, provider.Size{Cores: shape.Cores, MemoryMB: shape.MemoryMB, DiskGB: shape.DiskGB, Restart: true})
+	if err != nil {
+		return fmt.Errorf("change: %w", err)
+	}
+	switch {
+	case res.Restarted:
+		a.printf("  set, and restarted to apply it\n")
+	case res.Applied:
+		a.printf("  set\n")
+	default:
+		a.printf("  already set\n")
+	}
+	if res.Pending {
+		return fmt.Errorf("change: %s is set but takes effect only at the machine's next start; start it to finish", r.ResourceRefID)
+	}
+
+	resources, err := a.session.Discover(a.ctx)
+	if err != nil && len(resources) == 0 {
+		return fmt.Errorf("confirm: read the provider: %w", err)
+	}
+	var found *provider.Resource
+	for i := range resources {
+		if resources[i].Ref.ID == r.ResourceRefID {
+			found = &resources[i]
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("confirm: the provider does not list %s", r.ResourceRefID)
+	}
+	var wrong []string
+	if want := shape.Cores; want > 0 && int(found.Facts.CPUCores) != want {
+		wrong = append(wrong, fmt.Sprintf("it has %d cores, not %d", found.Facts.CPUCores, want))
+	}
+	if want := shape.MemoryMB; want > 0 && found.Memory.MaxBytes != int64(want)<<20 {
+		wrong = append(wrong, fmt.Sprintf("it runs with %d MiB of memory, not %d", found.Memory.MaxBytes>>20, want))
+	}
+	if found.Pending != nil {
+		wrong = append(wrong, "a size is still pending its next restart")
+	}
+	if len(wrong) > 0 {
+		return fmt.Errorf("confirm: %s was changed but is not as declared: %s; its record is unchanged", r.ResourceRefID, strings.Join(wrong, "; "))
+	}
+	inputs := make(map[string]any, len(e.Inputs))
+	for k, v := range e.Inputs {
+		inputs[k] = v
+	}
+	r.IntentInputs = inputs
+	if err := a.save(); err != nil {
+		return err
+	}
+	a.printf("  confirmed and recorded: as declared\n")
 	return nil
 }
 
