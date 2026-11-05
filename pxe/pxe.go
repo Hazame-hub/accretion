@@ -44,7 +44,9 @@ type Media struct {
 	// files of a RHEL DVD served by any web server.
 	Kernel string
 	Initrd string
-	// Repo is the inst.repo URL, the DVD's tree on the same server.
+	// Repo is the inst.repo URL, the DVD's tree on the same server, or
+	// "cdrom" for a machine that has the DVD in a local drive and takes only
+	// its kernel and initrd from the network.
 	Repo string
 	// Args are extra kernel arguments, each a key or key=value with no
 	// space.
@@ -96,7 +98,11 @@ func Script(g Gate) ([]byte, error) {
 		if _, dup := media[m.Name]; dup {
 			return nil, fmt.Errorf("pxe: two media are named %q", m.Name)
 		}
-		for what, u := range map[string]string{"kernel": m.Kernel, "initrd": m.Initrd, "repo": m.Repo} {
+		urls := map[string]string{"kernel": m.Kernel, "initrd": m.Initrd}
+		if m.Repo != "cdrom" {
+			urls["repo"] = m.Repo
+		}
+		for what, u := range urls {
 			if err := httpURL("media "+m.Name+" "+what, u); err != nil {
 				return nil, err
 			}

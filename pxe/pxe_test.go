@@ -58,6 +58,18 @@ func TestScriptGolden(t *testing.T) {
 	}
 }
 
+func TestRepoMayBeTheLocalDVD(t *testing.T) {
+	g := gate()
+	g.Media[0].Repo = "cdrom"
+	s, err := Script(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(s), " inst.repo=cdrom ") {
+		t.Fatalf("no inst.repo=cdrom:\n%s", s)
+	}
+}
+
 func TestNothingArmedBootsTheDisk(t *testing.T) {
 	g := gate()
 	g.Machines = nil
@@ -85,6 +97,7 @@ func TestScriptRefuses(t *testing.T) {
 		{"placeholder serial", func(g *Gate) { g.Machines[0].Serials = []string{"Default string"} }, "placeholder"},
 		{"no selector", func(g *Gate) { g.Machines[0].Serials = nil }, "no UUID, serial or MAC"},
 		{"shared MAC", func(g *Gate) { g.Machines[0].MACs = []string{"52:54:00:aa:00:09"} }, `"pc-01"`},
+		{"repo neither URL nor cdrom", func(g *Gate) { g.Media[0].Repo = "hd:sdb1" }, "repo"},
 		{"duplicate media", func(g *Gate) { g.Media = append(g.Media, g.Media[0]) }, "two media"},
 	}
 	for _, c := range cases {
