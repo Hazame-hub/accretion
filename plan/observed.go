@@ -34,6 +34,9 @@ type ObservedMachine struct {
 	// Values holds the facts that were reported, by Observed* name. A fact
 	// the observation did not carry, or carried ambiguously, is absent.
 	Values map[string]float64
+	// Pending holds, by Observed* name, the values set on the machine that
+	// it takes only at its next restart, where they differ from Values.
+	Pending map[string]float64
 	// State is the provider's power state ("running", "stopped", ...), ""
 	// when it was not reported.
 	State string
@@ -64,6 +67,9 @@ func ObservedFromProvider(raw json.RawMessage) (ObservedMachine, bool) {
 	}
 	if mem > 0 {
 		m.Values[ObservedMemoryMiB] = float64(mem) / (1 << 20)
+	}
+	if o.Pending != nil && o.Pending.RAMBytes > 0 {
+		m.Pending = map[string]float64{ObservedMemoryMiB: float64(o.Pending.RAMBytes) / (1 << 20)}
 	}
 	if len(o.Facts.Disks) == 1 && o.Facts.Disks[0].Total > 0 {
 		m.Values[ObservedBootDiskGiB] = float64(o.Facts.Disks[0].Total) / (1 << 30)
@@ -118,7 +124,16 @@ func observedDrift(e Entry, world Snapshot) (drift, alsoSet []InputDiff) {
 			continue
 		}
 		want, isNumber := asNumber(raw)
-		if !isNumber || want == 0 || satisfies(have, want, in.GrowOnly) {
+		if !isNumber || want == 0 {
+			continue
+		}
+		// A value set for the next restart is where the machine is going:
+		// running as declared until then is not "as declared".
+		if next, pending := obs.Pending[in.Observes]; pending && !satisfies(next, want, in.GrowOnly) {
+			drift = append(drift, InputDiff{Input: in.Name, From: math.Round(next), To: raw, Pending: true})
+			continue
+		}
+		if satisfies(have, want, in.GrowOnly) {
 			continue
 		}
 		drift = append(drift, InputDiff{Input: in.Name, From: math.Round(have), To: raw})
@@ -151,6 +166,10 @@ func satisfies(have, want float64, growOnly bool) bool {
 func describeDrift(drift, alsoSet []InputDiff) string {
 	parts := make([]string, 0, len(drift)+len(alsoSet))
 	for _, d := range drift {
+		if d.Pending {
+			parts = append(parts, fmt.Sprintf("%s was set to %v and takes effect at the machine's next restart, the manifest declares %v", d.Input, d.From, d.To))
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s is %v, the manifest declares %v", d.Input, d.From, d.To))
 	}
 	for _, d := range alsoSet {

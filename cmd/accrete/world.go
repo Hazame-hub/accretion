@@ -245,7 +245,7 @@ func (w *fileWorld) Read() plan.Snapshot {
 			}
 			snap.Power[*r.AssetID] = res.State
 		}
-		raw, _ := json.Marshal(provider.Observation{Facts: res.Facts, Memory: res.Memory, State: res.State, ObservedAt: at})
+		raw, _ := json.Marshal(provider.Observation{Facts: res.Facts, Memory: res.Memory, Pending: res.Pending, State: res.State, ObservedAt: at})
 		if m, ok := plan.ObservedFromProvider(raw); ok {
 			if snap.Observed == nil {
 				snap.Observed = map[uuid.UUID]plan.ObservedMachine{}

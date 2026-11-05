@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -127,13 +128,20 @@ func decideChange(e *Entry, r Realization, creator *Blueprint, world Snapshot) {
 		if to == nil {
 			to = in.Default
 		}
-		switch {
-		case d.From == nil && !isZero(to):
-			// Built without declaring it: what the machine has now is not
-			// recorded, so a "grow" could be a shrink nobody can see.
-			unknownNow = append(unknownNow, d.Input)
-		case shrinksValue(d.From, to):
-			shrinks = append(shrinks, fmt.Sprintf("%s (%v to %v)", d.Input, d.From, to))
+		from := d.From
+		if from == nil && !isZero(to) {
+			// Built without declaring it, so nothing was recorded; what the
+			// provider reports of the machine stands in, where it reports it.
+			// Without it a "grow" could be a shrink nobody can see.
+			have, seen := observedValue(e, in, world)
+			if !seen {
+				unknownNow = append(unknownNow, d.Input)
+				continue
+			}
+			from = have
+		}
+		if shrinksValue(from, to) {
+			shrinks = append(shrinks, fmt.Sprintf("%s (%v to %v)", d.Input, from, to))
 		}
 	}
 	if len(notInPlace) > 0 {
@@ -147,8 +155,8 @@ func decideChange(e *Entry, r Realization, creator *Blueprint, world Snapshot) {
 		return
 	}
 	if len(unknownNow) > 0 {
-		e.Blocked = fmt.Sprintf("%s was not declared when the machine was built, so what it has now is not known; "+
-			"declare it at its current value first", strings.Join(unknownNow, ", "))
+		e.Blocked = fmt.Sprintf("%s was not declared when the machine was built and the provider does not report "+
+			"what it has now, so a grow could be a shrink; it cannot change in place", strings.Join(unknownNow, ", "))
 		return
 	}
 	if r.MintedUUID == "" {
@@ -225,6 +233,21 @@ func inputByName(inputs []BlueprintInput, name string) *BlueprintInput {
 		}
 	}
 	return nil
+}
+
+// observedValue is what the provider last reported of the fact an input
+// sizes, rounded to whole units as inputs are declared. seen is false when the
+// input names no fact or the observation did not carry it.
+func observedValue(e *Entry, in *BlueprintInput, world Snapshot) (float64, bool) {
+	if in.Observes == "" || e.AssetID == nil || world.Observed == nil {
+		return 0, false
+	}
+	obs, ok := world.Observed[*e.AssetID]
+	if !ok {
+		return 0, false
+	}
+	have, ok := obs.Values[in.Observes]
+	return math.Round(have), ok
 }
 
 func isZero(v any) bool {
