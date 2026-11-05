@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,5 +102,38 @@ func TestResizeRefusesAMachineThatLostItsIdentity(t *testing.T) {
 	}
 	if memoryOf(l, 100) == "2048" {
 		t.Error("a machine with another identity was resized")
+	}
+}
+
+// Lab case (R8): a machine built without disk_gb grows its disk. What the
+// provider reports of the disk stands in for the size never recorded, and a
+// size below it is still refused.
+func TestApplyGrowsADiskThatWasNotDeclaredAtBuild(t *testing.T) {
+	l := builtLab(t, "")
+	setDisk := func(gb int) {
+		src, _ := os.ReadFile(l.manifest)
+		out := regexp.MustCompile(`(?m)^(\s*)memory_mb: 1024\n(\s*disk_gb: \d+\n)?`).
+			ReplaceAllString(string(src), fmt.Sprintf("${1}memory_mb: 1024\n${1}disk_gb: %d\n", gb))
+		if err := os.WriteFile(l.manifest, []byte(out), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	setDisk(8)
+	out, code := l.accrete("", "apply", "--auto-approve")
+	if code == 0 || !strings.Contains(out, "never shrunk: disk_gb (10 to 8)") {
+		t.Fatalf("a shrink: exit %d\n%s", code, out)
+	}
+
+	setDisk(12)
+	out, code = l.accrete("", "apply", "--auto-approve")
+	if code != 0 || !strings.Contains(out, "confirmed and recorded: as declared") {
+		t.Fatalf("grow: exit %d\n%s", code, out)
+	}
+	if disk := fmt.Sprint(l.pve.Guest(100).Config["scsi0"]); !strings.Contains(disk, "size=12G") {
+		t.Errorf("scsi0 = %s, want size=12G", disk)
+	}
+	if p := l.plan(); !strings.Contains(p.Summary, "2 unchanged") {
+		t.Errorf("after: %s", p.Summary)
 	}
 }
