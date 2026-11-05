@@ -96,22 +96,14 @@ func Build(profiles []Profile) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle: no profile to write")
 	}
 	ps := make([]profile, 0, len(profiles))
-	owner := map[string]string{} // selector key -> profile name
-	names := map[string]bool{}
+	var claims Claims
 	for _, p := range profiles {
 		c, err := check(p)
 		if err != nil {
 			return Bundle{}, err
 		}
-		if names[c.name] {
-			return Bundle{}, fmt.Errorf("bundle: two profiles are named %q", c.name)
-		}
-		names[c.name] = true
-		for _, k := range c.keys() {
-			if other, ok := owner[k.key]; ok {
-				return Bundle{}, fmt.Errorf("bundle: profiles %q and %q share the %s %q; a machine would match both", other, c.name, k.kind, k.shown)
-			}
-			owner[k.key] = c.name
+		if err := claims.Add(c.Identity); err != nil {
+			return Bundle{}, fmt.Errorf("bundle: %w", err)
 		}
 		ps = append(ps, c)
 	}
@@ -129,67 +121,117 @@ func Build(profiles []Profile) (Bundle, error) {
 
 // profile is a checked Profile in the form the script compares against.
 type profile struct {
+	Identity
 	name string
-	// uuids holds every form a UUID may be read in (provider.UUIDForms).
-	uuids   [][]string
-	serials []string
-	macs    []string
-	body    []byte
+	body []byte
+}
+
+// Identity is what names one machine to an installer: the values a booting
+// machine is matched by. Make one with CheckIdentity; package pxe matches on
+// the same values, so a machine is recognised the same way at both stages.
+type Identity struct {
+	Name string
+	// UUIDs holds, for each declared UUID, every form it may be read in
+	// (provider.UUIDForms), canonical first.
+	UUIDs   [][]string
+	Serials []string
+	// MACs are lower-case.
+	MACs []string
+}
+
+// CheckIdentity checks a machine's name and selectors. It refuses, naming
+// the machine and the value, a malformed or placeholder UUID, serial or MAC,
+// and a machine with no selector at all.
+func CheckIdentity(name string, uuids, serials, macs []string) (Identity, error) {
+	id := Identity{Name: name}
+	if !namePattern.MatchString(name) {
+		return id, fmt.Errorf("machine name %q: use lower-case letters, digits and hyphens", name)
+	}
+	for _, u := range uuids {
+		forms := provider.UUIDForms(u)
+		if forms == nil {
+			return id, fmt.Errorf("machine %q: UUID %q is malformed or a placeholder boards ship instead of an identity", name, u)
+		}
+		id.UUIDs = append(id.UUIDs, forms)
+	}
+	for _, s := range serials {
+		s = strings.TrimSpace(s)
+		if placeholderSerials[strings.ToLower(s)] {
+			return id, fmt.Errorf("machine %q: serial %q is a placeholder boards ship instead of a serial number", name, s)
+		}
+		if !serialPattern.MatchString(s) {
+			return id, fmt.Errorf("machine %q: serial %q has characters this file does not accept (letters, digits, space and ._/+:#- only)", name, s)
+		}
+		id.Serials = append(id.Serials, s)
+	}
+	for _, m := range macs {
+		m = strings.ToLower(strings.TrimSpace(m))
+		if !macPattern.MatchString(m) {
+			return id, fmt.Errorf("machine %q: MAC %q is not of the form aa:bb:cc:dd:ee:ff", name, m)
+		}
+		if placeholderMACs[m] {
+			return id, fmt.Errorf("machine %q: MAC %q names no card", name, m)
+		}
+		id.MACs = append(id.MACs, m)
+	}
+	if len(id.UUIDs)+len(id.Serials)+len(id.MACs) == 0 {
+		return id, fmt.Errorf("machine %q has no UUID, serial or MAC; no machine could select it", name)
+	}
+	return id, nil
+}
+
+// Claims records which machine each selector names, and refuses a selector
+// two machines share: a booting machine would match both.
+type Claims struct {
+	owner map[string]string
+	names map[string]bool
+}
+
+// Add claims id's name and selectors.
+func (c *Claims) Add(id Identity) error {
+	if c.owner == nil {
+		c.owner, c.names = map[string]string{}, map[string]bool{}
+	}
+	if c.names[id.Name] {
+		return fmt.Errorf("two machines are named %q", id.Name)
+	}
+	keys := id.keys()
+	for _, k := range keys {
+		if other, ok := c.owner[k.key]; ok && other != id.Name {
+			return fmt.Errorf("machines %q and %q share the %s %q; a booting machine would match both", other, id.Name, k.kind, k.shown)
+		}
+	}
+	c.names[id.Name] = true
+	for _, k := range keys {
+		c.owner[k.key] = id.Name
+	}
+	return nil
 }
 
 type selectorKey struct{ kind, key, shown string }
 
-func (p profile) keys() []selectorKey {
+func (id Identity) keys() []selectorKey {
 	var out []selectorKey
-	for _, forms := range p.uuids {
+	for _, forms := range id.UUIDs {
 		for _, f := range forms {
 			out = append(out, selectorKey{"UUID", "uuid " + f, forms[0]})
 		}
 	}
-	for _, s := range p.serials {
+	for _, s := range id.Serials {
 		out = append(out, selectorKey{"serial", "serial " + s, s})
 	}
-	for _, m := range p.macs {
+	for _, m := range id.MACs {
 		out = append(out, selectorKey{"MAC", "mac " + m, m})
 	}
 	return out
 }
 
 func check(p Profile) (profile, error) {
-	c := profile{name: p.Name, body: p.Kickstart}
-	if !namePattern.MatchString(p.Name) {
-		return c, fmt.Errorf("bundle: profile name %q: use lower-case letters, digits and hyphens", p.Name)
+	id, err := CheckIdentity(p.Name, p.UUIDs, p.Serials, p.MACs)
+	if err != nil {
+		return profile{}, fmt.Errorf("bundle: %w", err)
 	}
-	for _, u := range p.UUIDs {
-		forms := provider.UUIDForms(u)
-		if forms == nil {
-			return c, fmt.Errorf("bundle: profile %q: UUID %q is malformed or a placeholder boards ship instead of an identity", p.Name, u)
-		}
-		c.uuids = append(c.uuids, forms)
-	}
-	for _, s := range p.Serials {
-		s = strings.TrimSpace(s)
-		if placeholderSerials[strings.ToLower(s)] {
-			return c, fmt.Errorf("bundle: profile %q: serial %q is a placeholder boards ship instead of a serial number", p.Name, s)
-		}
-		if !serialPattern.MatchString(s) {
-			return c, fmt.Errorf("bundle: profile %q: serial %q has characters this file does not accept (letters, digits, space and ._/+:#- only)", p.Name, s)
-		}
-		c.serials = append(c.serials, s)
-	}
-	for _, m := range p.MACs {
-		m = strings.ToLower(strings.TrimSpace(m))
-		if !macPattern.MatchString(m) {
-			return c, fmt.Errorf("bundle: profile %q: MAC %q is not of the form aa:bb:cc:dd:ee:ff", p.Name, m)
-		}
-		if placeholderMACs[m] {
-			return c, fmt.Errorf("bundle: profile %q: MAC %q names no card", p.Name, m)
-		}
-		c.macs = append(c.macs, m)
-	}
-	if len(c.uuids)+len(c.serials)+len(c.macs) == 0 {
-		return c, fmt.Errorf("bundle: profile %q has no UUID, serial or MAC; no machine could select it", p.Name)
-	}
+	c := profile{Identity: id, name: p.Name, body: p.Kickstart}
 	if len(bytes.TrimSpace(p.Kickstart)) == 0 {
 		return c, fmt.Errorf("bundle: profile %q has an empty kickstart", p.Name)
 	}
@@ -224,15 +266,15 @@ func render(ps []profile) []byte {
 	w("hit() { case \" $match \" in *\" $1 \"*) ;; *) match=\"${match:+$match }$1\" ;; esac; }\n")
 	for _, p := range ps {
 		w("# %s\n", p.name)
-		for _, forms := range p.uuids {
+		for _, forms := range p.UUIDs {
 			for _, f := range forms {
 				w("[ \"$uuid\" = '%s' ] && hit %s\n", f, p.name)
 			}
 		}
-		for _, s := range p.serials {
+		for _, s := range p.Serials {
 			w("[ \"$serial\" = '%s' ] && hit %s\n", s, p.name)
 		}
-		for _, m := range p.macs {
+		for _, m := range p.MACs {
 			w("case \" $macs \" in *' %s '*) hit %s ;; esac\n", m, p.name)
 		}
 	}
