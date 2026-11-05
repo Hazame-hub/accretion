@@ -1,0 +1,44 @@
+#!ipxe
+# Written by accrete. Armed for an install: db-01, pc-01, web-01.
+# Any other machine goes back to its firmware and boots its own disk.
+set accrete-n:int32 0
+set accrete-m
+# db-01
+set accrete-hit 0
+iseq ${uuid} 4c4c4544-0042-3510-8051-b4c04f4e4d32 && set accrete-hit 1 ||
+iseq ${uuid} 44454c4c-4200-1035-8051-b4c04f4e4d32 && set accrete-hit 1 ||
+iseq ${accrete-hit} 1 && inc accrete-n && set accrete-m db-01 ||
+# pc-01
+set accrete-hit 0
+iseq ${netX/mac} 52:54:00:aa:00:09 && set accrete-hit 1 ||
+iseq ${accrete-hit} 1 && inc accrete-n && set accrete-m pc-01 ||
+# web-01
+set accrete-hit 0
+iseq ${serial} CZJ1234ABC && set accrete-hit 1 ||
+iseq ${accrete-hit} 1 && inc accrete-n && set accrete-m web-01 ||
+iseq ${accrete-n} 0 && goto accrete-unknown ||
+iseq ${accrete-n} 1 || goto accrete-ambiguous
+echo accrete: installing ${accrete-m} (uuid ${uuid} serial ${serial} mac ${netX/mac})
+iseq ${accrete-m} db-01 && goto accrete-media-rhel-10.0 ||
+iseq ${accrete-m} pc-01 && goto accrete-media-rhel-9.6 ||
+iseq ${accrete-m} web-01 && goto accrete-media-rhel-9.6 ||
+goto accrete-unknown
+:accrete-media-rhel-10.0
+kernel --name vmlinuz http://media.lan/rhel10/images/pxeboot/vmlinuz initrd=initrd.img inst.repo=http://media.lan/rhel10 inst.ks=http://media.lan/accrete/ks.cfg inst.text console=ttyS0,115200 || goto accrete-failed
+initrd --name initrd.img http://media.lan/rhel10/images/pxeboot/initrd.img || goto accrete-failed
+boot || goto accrete-failed
+:accrete-media-rhel-9.6
+kernel --name vmlinuz http://media.lan/rhel96/images/pxeboot/vmlinuz initrd=initrd.img inst.repo=http://media.lan/rhel96 inst.ks=http://media.lan/accrete/ks.cfg inst.text || goto accrete-failed
+initrd --name initrd.img http://media.lan/rhel96/images/pxeboot/initrd.img || goto accrete-failed
+boot || goto accrete-failed
+:accrete-unknown
+echo accrete: no install is armed for this machine (uuid ${uuid} serial ${serial} mac ${netX/mac}); booting from its own disk
+exit 1
+:accrete-ambiguous
+echo accrete: this machine matches more than one armed machine (uuid ${uuid} serial ${serial} mac ${netX/mac}); nothing is installed
+sleep 10
+exit 1
+:accrete-failed
+echo accrete: the installer for ${accrete-m} could not be loaded; nothing is installed
+sleep 10
+exit 1
