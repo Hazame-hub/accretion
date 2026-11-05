@@ -77,7 +77,38 @@ func (s *session) Changes(ctx context.Context, ref provider.Ref) ([]provider.Cha
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	markRebootStarts(out)
 	return out, nil
+}
+
+// rebootStartWindow is how soon after a reboot task Proxmox's own start of
+// the guest follows it.
+const rebootStartWindow = 2 * time.Minute
+
+// markRebootStarts gives a reboot's own start to whoever asked for the
+// reboot. Proxmox carries out a reboot as a stop and a qmstart task that it
+// logs under root@pam (lab, PVE 9.1, 2026-11-05: accrete's qmreboot at
+// 22:17:57, then "Start" by root@pam at 22:17:59), so the newest power task
+// after accrete restarted a machine would otherwise blame root@pam. changes
+// is newest first.
+func markRebootStarts(changes []provider.Change) {
+	for i := range changes {
+		c := &changes[i]
+		if c.What != "qmstart" || c.By != "root@pam" {
+			continue
+		}
+		for j := i + 1; j < len(changes); j++ {
+			r := changes[j]
+			if c.At.Sub(r.At) > rebootStartWindow {
+				break
+			}
+			if r.What == "qmreboot" && !r.Failed {
+				c.By, c.Self = r.By, r.Self
+				c.What = "qmstart, part of " + r.By + "'s qmreboot"
+				break
+			}
+		}
+	}
 }
 
 // taskAuthor is who made a task, naming the token when one did. The task
