@@ -294,6 +294,26 @@ func TestDestroyRemovesAStuckInstallAndKeepsTheInstaller(t *testing.T) {
 	}
 }
 
+// A token without SDN.Audit lists the guests but not the SDN: destroy still
+// removes the half-built install it finds at its ref with the minted UUID
+// (found on the lab, VM 116), and refuses nothing else on that ground.
+func TestDestroyRemovesAStuckInstallFromAPartialListing(t *testing.T) {
+	l := newInstallLab(t, "")
+	l.pve.InstallReads = -1
+	if _, code := l.accrete("", "apply", "--auto-approve"); code != 1 {
+		t.Fatal("the first apply should stop at the deadline")
+	}
+	l.pve.Privileges = map[string][]string{"/sdn": {}}
+	out, code := l.accrete("", "destroy", "--auto-approve")
+	if code != 0 {
+		t.Fatalf("destroy: exit %d\n%s", code, out)
+	}
+	mustContain(t, out, "remove ks/0 (half-built by an earlier apply)", "deleted pve1/qemu/100")
+	if l.pve.Guest(100) != nil {
+		t.Error("the VM is still there")
+	}
+}
+
 // Destroy after an accepted install: the VM goes, the ISO stays.
 func TestDestroyAfterAnInstallKeepsTheInstaller(t *testing.T) {
 	l := newInstallLab(t, "")

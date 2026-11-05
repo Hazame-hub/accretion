@@ -638,10 +638,13 @@ func (a *applier) resize(rz provider.Resizer, e plan.Entry, rec provider.Recipe)
 func (a *applier) abandon(run uuid.UUID) error {
 	r := a.applying(run)
 	resources, err := a.session.Discover(a.ctx)
-	if err != nil && (len(resources) == 0 || r.ResourceRefID != "") {
-		// A partial listing proves nothing about a guest it does not list.
+	if err != nil && len(resources) == 0 {
 		return fmt.Errorf("read the provider: %w", err)
 	}
+	// A partial listing (the SDN unreadable, say) proves nothing about a
+	// guest it does not list, so it only ever lets a guest it does list,
+	// carrying the minted identity, be removed.
+	listErr := err
 	if r.ResourceRefID == "" {
 		// The clone never answered: it may have been made, and may still be
 		// copying, while the provider lists it with no identity yet (a clone
@@ -674,6 +677,8 @@ func (a *applier) abandon(run uuid.UUID) error {
 		}
 	}
 	switch {
+	case found == nil && listErr != nil && r.ResourceRefID != "":
+		return fmt.Errorf("read the provider: %w", listErr)
 	case found != nil:
 		var seeds []provider.Placement
 		if rec, err := a.recipe(r.Blueprint, r.IntentInputs); err == nil && rec.Seed != nil {
