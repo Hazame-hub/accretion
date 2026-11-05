@@ -108,6 +108,13 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				refuse("%s: %v", name, err)
 				continue
 			}
+			if rec.Install != nil {
+				// The installer must be there before anything is made.
+				if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Install.Create.Placement, rec.Install.Create.Installer); err != nil {
+					refuse("%s: %v", name, err)
+					continue
+				}
+			}
 			steps = append(steps, step{"create " + name, func() error { return a.create(e, rec) }})
 		case e.Action == plan.ActionUnknown && e.RunID != nil:
 			i, ours := applying[*e.RunID]
@@ -248,6 +255,15 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 	if err != nil {
 		return provider.Recipe{}, err
 	}
+	if rec.Install != nil {
+		if _, ok := a.writer.(provider.Installer); !ok {
+			return provider.Recipe{}, errors.New("the provider cannot install machines from installer media")
+		}
+		if _, err := kickstart(rec); err != nil {
+			return provider.Recipe{}, err
+		}
+		return rec, nil
+	}
 	if _, err := userData(rec); err != nil {
 		return provider.Recipe{}, err
 	}
@@ -296,7 +312,7 @@ func (a *applier) create(e plan.Entry, rec provider.Recipe) error {
 		MintedUUID:   uuid.NewString(),
 		OwnerMark:    "accrete:" + run.String(),
 		Name:         rec.Hostname,
-		Step:         stepClone,
+		Step:         firstStep(rec),
 	})
 	if err := a.save(); err != nil {
 		return err
@@ -304,7 +320,7 @@ func (a *applier) create(e plan.Entry, rec provider.Recipe) error {
 	return a.build(run, rec)
 }
 
-func (a *applier) record(run uuid.UUID) *Applying {
+func (a *applier) applying(run uuid.UUID) *Applying {
 	for i := range a.state.Applying {
 		if a.state.Applying[i].RunID == run {
 			return &a.state.Applying[i]
@@ -320,8 +336,11 @@ func (a *applier) target(r *Applying) provider.Target {
 // build runs a machine's steps from the one its record names, saving the
 // state after each.
 func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
+	if rec.Install != nil {
+		return a.install(run, rec)
+	}
 	for {
-		r := a.record(run)
+		r := a.applying(run)
 		if r == nil {
 			return nil
 		}
@@ -376,7 +395,7 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 // is what the provider observes (the identity, running, the declared size),
 // not an agent's report: v0.1 enrols no agent.
 func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
-	r := a.record(run)
+	r := a.applying(run)
 	resources, err := a.session.Discover(a.ctx)
 	if err != nil && len(resources) == 0 {
 		return fmt.Errorf("confirm: read the provider: %w", err)
@@ -403,7 +422,13 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 	if want := rec.Clone.Shape.MemoryMB; want > 0 && found.Facts.RAMBytes != int64(want)<<20 {
 		wrong = append(wrong, fmt.Sprintf("it has %d MiB of memory, not %d", found.Facts.RAMBytes>>20, want))
 	}
+	return a.record(run, wrong, "confirmed and recorded: running, as declared")
+}
 
+// record turns a built machine's record into a realization, accepted unless
+// wrong says why not, and drops it from what is being applied.
+func (a *applier) record(run uuid.UUID, wrong []string, accepted string) error {
+	r := a.applying(run)
 	asset, id := uuid.New(), uuid.New()
 	runbook := ""
 	for _, bp := range a.blueprints {
@@ -430,6 +455,12 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 		a.state.Groups[g] = append(a.state.Groups[g], asset)
 	}
 	a.state.Verdicts[asset] = verdict
+	if r.Install != nil {
+		if a.state.Installs == nil {
+			a.state.Installs = map[uuid.UUID]InstallRecord{}
+		}
+		a.state.Installs[id] = *r.Install
+	}
 	a.dropApplying(run)
 	if err := a.save(); err != nil {
 		return err
@@ -437,7 +468,7 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 	if len(wrong) > 0 {
 		return fmt.Errorf("confirm: %s is built and recorded, but rejected: %s", r.ResourceRefID, strings.Join(wrong, "; "))
 	}
-	a.printf("  confirmed and recorded: running, as declared\n")
+	a.printf("  %s\n", accepted)
 	return nil
 }
 
@@ -605,7 +636,7 @@ func (a *applier) resize(rz provider.Resizer, e plan.Entry, rec provider.Recipe)
 // the mark but not yet the identity is left for apply to finish: deleting
 // it would mean trusting a name.
 func (a *applier) abandon(run uuid.UUID) error {
-	r := a.record(run)
+	r := a.applying(run)
 	resources, err := a.session.Discover(a.ctx)
 	if err != nil && (len(resources) == 0 || r.ResourceRefID != "") {
 		// A partial listing proves nothing about a guest it does not list.

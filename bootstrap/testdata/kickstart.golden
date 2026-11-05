@@ -1,0 +1,42 @@
+# Written by accrete for ks-1. It is rendered from the manifest: edit that, not this.
+text
+cdrom
+lang en_US.UTF-8
+keyboard us
+timezone Europe/Rome --utc
+network --bootproto=dhcp --device=link --activate --hostname=ks-1
+rootpw --lock
+selinux --enforcing
+firewall --enabled --service=ssh
+skipx
+firstboot --disable
+ignoredisk --only-use=sda
+zerombr
+clearpart --all --initlabel --drives=sda
+autopart
+bootloader --boot-drive=sda
+services --enabled=qemu-guest-agent,sshd
+user --name=ops
+sshkey --username=ops "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbm9wZW5zc2gta2V5LXYxAAAAAA ops@laptop"
+
+%packages
+@^minimal-environment
+qemu-guest-agent
+vim-enhanced
+%end
+
+%post --erroronfail
+set -eu
+echo 'ops ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-accrete-ops
+chmod 0440 /etc/sudoers.d/90-accrete-ops
+mkdir -p "$(dirname '/etc/motd')"
+base64 -d > '/etc/motd' <<'ACCRETE_FILE'
+bWFuYWdlZCBieSBhY2NyZXRlCg==
+ACCRETE_FILE
+chmod 0644 '/etc/motd'
+chown root:root '/etc/motd'
+restorecon '/etc/motd' 2>/dev/null || true
+restorecon -R /etc/sudoers.d 2>/dev/null || true
+%end
+
+poweroff

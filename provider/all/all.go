@@ -34,7 +34,7 @@ type Driver struct {
 }
 
 var drivers = map[string]Driver{
-	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
+	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.AccreteBlueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
 		Permissions: proxmox.Permissions},
 }
 
