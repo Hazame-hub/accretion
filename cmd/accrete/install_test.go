@@ -210,6 +210,33 @@ func TestAnInstallPastItsDeadlineIsKeptAndARerunFinishesIt(t *testing.T) {
 	}
 }
 
+// The timeout a rerun waits is the manifest's as it is now: one found too
+// short is raised by editing it (the lab's 7.4: removing
+// install_timeout_minutes: 1 left the rerun on 1 minute).
+func TestARerunWaitsTheManifestsTimeoutNotTheFirstApplys(t *testing.T) {
+	l := newInstallLab(t, "        install_timeout_minutes: 1\n")
+	var asked []time.Duration
+	installDeadline = func(d time.Duration) time.Duration { asked = append(asked, d); return 200 * time.Millisecond }
+	l.pve.InstallReads = -1
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 1 || !strings.Contains(out, "still running its installer") {
+		t.Fatalf("first apply: exit %d\n%s", code, out)
+	}
+	src := strings.Replace(strings.Replace(installManifest, "ENDPOINT", l.pve.URL, 1), "EXTRA", "", 1)
+	if err := os.WriteFile(l.manifest, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 1 || !strings.Contains(out, "finish ks/0 (half-built by an earlier apply)") {
+		t.Fatalf("rerun: exit %d\n%s", code, out)
+	}
+	if len(asked) != 2 || asked[0] != time.Minute || asked[1] != 60*time.Minute {
+		t.Errorf("deadlines asked: %v, want [1m0s 1h0m0s]", asked)
+	}
+	l.pve.FinishInstall(100)
+	if out, code := l.accrete("", "apply", "--auto-approve"); code != 0 {
+		t.Fatalf("last apply: exit %d\n%s", code, out)
+	}
+}
+
 // Killed before the VM was recorded: the create's answer is lost, and the
 // rerun finds the VM by its owner mark and identity.
 func TestAnInstallWhoseCreateAnswerWasLostCarriesOnWithTheSameMachine(t *testing.T) {

@@ -128,6 +128,14 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				refuse("%s: %v", name, err)
 				continue
 			}
+			if rec.Install != nil && e.Inputs != nil && e.Blueprint == a.state.Applying[i].Blueprint {
+				// How long this apply waits is the manifest's to say now, not
+				// the first apply's: a timeout found too short is raised by
+				// editing the manifest. The rest of the build stays as recorded.
+				if now, err := a.buildable(e.Blueprint, e.Inputs); err == nil && now.Install != nil {
+					rec.Install.Timeout = now.Install.Timeout
+				}
+			}
 			resumed[*e.RunID] = true
 			id := *e.RunID
 			steps = append(steps, step{"finish " + name + " (half-built by an earlier apply)", func() error { return a.build(id, rec) }})
