@@ -56,8 +56,19 @@ type Guest struct {
 	Status   string // running | stopped | paused
 	Template bool
 	Config   map[string]any
+	// Pending holds config changes the running guest takes at its next
+	// start: GET config shows them applied, status/current does not.
+	Pending map[string]any
 	// cloning counts the reads that still see the guest being cloned.
 	cloning int
+}
+
+// applyPending is a start: the guest takes its pending config.
+func (g *Guest) applyPending() {
+	for k, v := range g.Pending {
+		g.Config[k] = v
+	}
+	g.Pending = nil
 }
 
 // seen is one read of the guest; it reports whether the clone is still
@@ -98,6 +109,31 @@ type Server struct {
 	failCode  int
 	// refuseToken answers every request 401.
 	refuseToken bool
+	// Privileges, when set, is what the token may do on each ACL path, as
+	// GET /access/permissions?path= answers it. Nil keeps the default answer
+	// (SDN.Audit on /sdn).
+	Privileges map[string][]string
+	// Tasks is the node's task log, oldest first, as GET /nodes/pve1/tasks
+	// lists it. The server's own mutations add nothing to it: a test writes
+	// the entries a change made by somebody would have left.
+	Tasks []Task
+}
+
+// Task is one entry of the task log.
+type Task struct {
+	Type  string // qmconfig, qmstop, ...
+	User  string // user@realm or user@realm!tokenid
+	VMID  int
+	Start time.Time
+	// Status is "OK" when empty.
+	Status string
+}
+
+// AddTask appends an entry to the task log.
+func (s *Server) AddTask(t Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Tasks = append(s.Tasks, t)
 }
 
 // New starts a cluster holding template 9000 (rocky-9-cloud, stopped, with a
@@ -224,6 +260,18 @@ func (s *Server) SetConfig(vmid int, key string, v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Guests[vmid].Config[key] = v
+}
+
+// SetPending holds a config change for the guest's next start, as Proxmox
+// does for a memory change on a running VM without memory hotplug.
+func (s *Server) SetPending(vmid int, key string, v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.Guests[vmid]
+	if g.Pending == nil {
+		g.Pending = map[string]any{}
+	}
+	g.Pending[key] = v
 }
 
 const upid = "UPID:pve1:00001234:00005678:65000000:task:0:accrete@pve!test:"
@@ -354,10 +402,42 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			next++
 		}
 		data(strconv.Itoa(next))
+	case r.Method == http.MethodGet && p == "/nodes/pve1/tasks":
+		// The task log, newest first, for the vmid asked.
+		vmid := r.URL.Query().Get("vmid")
+		rows := []map[string]any{}
+		for i := len(s.Tasks) - 1; i >= 0; i-- {
+			t := s.Tasks[i]
+			if vmid != "" && strconv.Itoa(t.VMID) != vmid {
+				continue
+			}
+			status := t.Status
+			if status == "" {
+				status = "OK"
+			}
+			// As Proxmox lists it: "user" names the user only, the token
+			// is in the UPID.
+			user, _, _ := strings.Cut(t.User, "!")
+			upid := fmt.Sprintf("UPID:pve1:00001234:00005678:%08X:%s:%d:%s:", t.Start.Unix(), t.Type, t.VMID, t.User)
+			rows = append(rows, map[string]any{"type": t.Type, "user": user, "upid": upid, "starttime": t.Start.Unix(),
+				"status": status, "id": strconv.Itoa(t.VMID), "node": "pve1"})
+		}
+		data(rows)
 	case strings.HasPrefix(p, "/nodes/pve1/tasks/"):
 		data(map[string]any{"status": "stopped", "exitstatus": "OK"})
 	case r.Method == http.MethodGet && p == "/access/permissions":
-		data(map[string]any{"/sdn": map[string]any{"SDN.Audit": 1}})
+		path := r.URL.Query().Get("path")
+		if s.Privileges == nil || path == "" {
+			data(map[string]any{"/sdn": map[string]any{"SDN.Audit": 1}})
+			break
+		}
+		// As Proxmox answers for one path: what the token may do there,
+		// propagation from parent paths applied.
+		have := map[string]any{}
+		for _, priv := range s.Privileges[path] {
+			have[priv] = 1
+		}
+		data(map[string]any{path: have})
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
 		data([]any{})
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":
@@ -426,7 +506,16 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 			data(map[string]any{"lock": "clone", "digest": "0"})
 			return
 		}
-		data(g.Config)
+		cfg := map[string]any{}
+		for k, v := range g.Config {
+			cfg[k] = v
+		}
+		if r.URL.Query().Get("current") != "1" {
+			for k, v := range g.Pending {
+				cfg[k] = v
+			}
+		}
+		data(cfg)
 	case r.Method == http.MethodGet && rest == "/status/current":
 		data(map[string]any{"status": statusOf(g), "qmpstatus": g.Status, "maxmem": memBytes(g)})
 	case r.Method == http.MethodGet && strings.HasPrefix(rest, "/agent/"):
@@ -462,6 +551,19 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				}
 				continue
 			}
+			// As Proxmox does without cpu or memory hotplug (its default):
+			// a running guest takes the new value at its next start.
+			if g.Status != "stopped" && (k == "cores" || k == "memory") && !strings.Contains(fmt.Sprint(g.Config["hotplug"]), map[string]string{"cores": "cpu", "memory": "memory"}[k]) {
+				if g.Pending == nil {
+					g.Pending = map[string]any{}
+				}
+				g.Pending[k] = form.Get(k)
+				if fmt.Sprint(g.Config[k]) == form.Get(k) {
+					delete(g.Pending, k)
+				}
+				continue
+			}
+			delete(g.Pending, k)
 			g.Config[k] = form.Get(k)
 		}
 		data(nil)
@@ -481,7 +583,14 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				fail(http.StatusInternalServerError, "VM is paused")
 				return
 			}
+			g.applyPending()
 			g.Status = "running"
+		case "reboot":
+			if g.Status != "running" {
+				fail(http.StatusInternalServerError, "VM is not running")
+				return
+			}
+			g.applyPending()
 		case "stop", "shutdown":
 			g.Status = "stopped"
 		default:

@@ -190,6 +190,9 @@ type Entry struct {
 	// resized outside Sybil — rather than the manifest changing. Diff's From
 	// is then what the provider observed.
 	Drift bool `json:"drift,omitempty"`
+	// ChangedBy says who made a drift or a power difference, when the
+	// embedder read the provider's record of the machine. See ChangeAuthor.
+	ChangedBy *ChangeAuthor `json:"changed_by,omitempty"`
 	// Apply is what an apply does about a change or a delete (ApplyReconfigure
 	// or ApplyDestroy, with LifecycleBlueprint the blueprint it runs). Empty
 	// on those actions means it does nothing, and Blocked says why.
@@ -226,6 +229,9 @@ type InputDiff struct {
 	Input string `json:"input"`
 	From  any    `json:"from,omitempty"`
 	To    any    `json:"to,omitempty"`
+	// Pending says From is not what the machine runs with yet but what it
+	// was set to for its next restart.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Plan is the whole answer for one Environment.

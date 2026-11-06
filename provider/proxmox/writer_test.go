@@ -62,7 +62,7 @@ func TestCloneIsBornWithItsIdentityShapeAndDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Ref.ID != "pve1/qemu/100" || !m.Applied {
+	if m.Ref.ID != "pve1/qemu/100" || !m.Applied || m.Found {
 		t.Fatalf("Clone = %+v", m)
 	}
 	g := pve.Guest(100)
@@ -90,7 +90,7 @@ func TestCloneIsBornWithItsIdentityShapeAndDisk(t *testing.T) {
 		MintUUID: mintA, OwnerMark: "accrete:run-a",
 		Shape: provider.Shape{Cores: 4, MemoryMB: 4096, CPU: "x86-64-v2-AES", DiskGB: 20, NICs: []string{"virtio,bridge=vmbr1"}},
 	})
-	if err != nil || again.Applied || again.Ref != m.Ref {
+	if err != nil || again.Applied || !again.Found || again.Ref != m.Ref {
 		t.Fatalf("second Clone = %+v, %v", again, err)
 	}
 	if after := pve.Writes(); len(after) != before {

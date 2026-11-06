@@ -44,8 +44,9 @@ You need:
    Proxmox's permission paths allow):
    - on the machines (`/vms`): `VM.Allocate`, `VM.Clone`, `VM.Audit`,
      `VM.PowerMgmt`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`,
-     `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM` and
-     `VM.Config.HWType`;
+     `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM`,
+     `VM.Config.Cloudinit` (Proxmox checks it when the seed goes on a clone of
+     a template that has a cloud-init drive) and `VM.Config.HWType`;
    - on the disk storage: `Datastore.Audit` and `Datastore.AllocateSpace`;
    - on the seed storage (`snippet_storage`): `Datastore.Audit`,
      `Datastore.AllocateTemplate` (to upload the seed ISO) and
@@ -55,10 +56,15 @@ You need:
 
    Optional: `VM.GuestAgent.Audit` (Proxmox VE 9) or `VM.Monitor` (VE 8) on
    the machines lets `plan` show the guest agent's hostname and addresses;
-   without it they are left out, and nothing else changes.
+   without it they are left out, and nothing else changes. Optional too:
+   `SDN.Audit` on `/sdn`, without which Proxmox lists the SDN as empty and
+   every `plan` warns that its listing is incomplete.
 
-   No built-in role covers all of these; make one with this list. A token
-   that misses one is refused with the privilege and path named.
+   No built-in role covers all of these. `accrete permissions -f env.yaml`
+   (step 3 first) prints the exact role your manifest needs, the paths to
+   grant it on, and the UI steps and `pveum` commands to do it, then checks
+   your token against it. A token that misses one is refused with the
+   privilege and path named.
 2. Put the token in an environment variable. It is never written into the
    manifest or the state:
 
@@ -116,6 +122,8 @@ It holds no endpoint and no credential.
 | `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
 | `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
+| `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
 apply and destroy): how long the whole command may run.
@@ -124,6 +132,12 @@ apply and destroy): how long the whole command may run.
 - **create:** clone the template, seed cloud-init, start the machine, confirm it, record it.
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
+- **change** of cores, memory or disk size (the manifest changed, or the
+  machine was changed outside accrete, or such a change waits for its next
+  restart): set it in place, restart the machine when the change needs that
+  (on Proxmox, cores or memory without hotplug), confirm what it runs with,
+  then record it. The disk only grows; a shrink is refused at plan time. A
+  stopped machine is not changed: start it first.
 - **any other change:** not done. It is reported and the exit status is 1.
 - **unknown:** a machine an earlier apply left half-built is finished (or,
   if the manifest no longer declares it, removed). A machine the manifest no
@@ -216,6 +230,46 @@ instances would be identical is refused.
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
 
+### Declare what already runs: `accrete init --from-cluster`
+
+```sh
+accrete init --from-cluster --provider proxmox --endpoint https://pve.example.lan:8006 \
+  --token-env ACCRETE_PROXMOX_TOKEN --verify-tls=false --name lab [--select '^web-'] [--template 9000]
+```
+
+It reads the cluster (GET requests only) and writes `env.yaml` and
+`accrete.state.json` for the VMs it finds, then runs `accrete plan` on them.
+Machines named `web-1` to `web-n` with the same size and settings become one
+resource with `count: n`; every other VM is a resource of its own. Each VM is
+recorded as adopted and tied to the SMBIOS UUID it carries now, so from then
+on it is planned, drift-checked and destroyed like a machine accrete built.
+
+- Nothing is guessed. A full clone does not record its template, so unless
+  `--template` is given (or the VM is a linked clone), `template_vmid` is left
+  as a variable (`template_<resource>`) and the plan says it is missing.
+- A VM with no SMBIOS UUID, or whose name is not a DNS label, is left out
+  with the reason printed. A stopped VM is declared `power: "off"`.
+- init never overwrites a file.
+
+### Who changed it
+
+A line that says a machine was changed outside accrete (a size that drifted,
+or a machine powered off when the manifest says on) also says who made that
+change, read from Proxmox's task log:
+
+```
+  change   web/0  (pve1/qemu/100)  changed outside Sybil: memory_mb is 2048, the manifest declares 1024
+             memory_mb: 2048 -> 1024
+             changed by hamza@pve at 2026-11-01T13:00:00Z (qmconfig)
+```
+
+It never guesses. When the newest recorded change of that kind is accrete's
+own, when none is recorded, or when the newest power change does not explain
+the state (a shutdown typed inside the guest leaves no task), the line says
+`changed by: unknown` and why. Proxmox records no task for a config change
+made through its synchronous API, and lists others' tasks only to a token
+with `Sys.Audit` on the node. JSON output carries it as `changed_by`.
+
 ## What v0.1 does not do
 
 apply refuses these before sending anything, and exits 1:
@@ -232,14 +286,17 @@ apply refuses these before sending anything, and exits 1:
 
 Also not done in v0.1:
 
-- **Changing a built machine's size or inputs.** Such a line plans as `change`
-  and is reported as not done. Destroy and re-apply, or wait for Resize.
+- **Changing a built machine's other inputs** (template, network, hostname,
+  bootstrap). Such a line plans as `change` and is reported as not done.
+  Destroy and re-apply.
 - **Cross-node clones.** A machine is cloned on its template's node.
 - **Agents.** "Accepted" in accrete means what the provider observes: the
   machine runs, carries its minted SMBIOS UUID, and has the declared cores and
   memory. No agent enrols and nothing inside the guest is checked. Importing
   the manifest and state into Sybil re-evaluates acceptance with an agent.
-- **Adopting machines that accrete did not build.**
+- **Adopting one machine into an existing manifest.** `accrete init
+  --from-cluster` declares and adopts what runs (see above), into a new
+  manifest.
 - **Providers other than Proxmox.**
 
 ## For provider authors

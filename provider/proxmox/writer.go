@@ -307,6 +307,7 @@ func (s *session) Clone(ctx context.Context, req provider.CloneRequest) (provide
 		Ref:      refOf(node, vmid),
 		Identity: provider.Identity{SMBIOSUUID: strings.ToLower(req.MintUUID), HypervisorGuestID: vmid, MACs: []string{}, IPs: []string{}},
 		Applied:  cloned || shaped || grown,
+		Found:    !cloned,
 	}, nil
 }
 
@@ -574,6 +575,96 @@ func (s *session) Power(ctx context.Context, m provider.Target, want provider.Po
 		return provider.PowerResult{}, fmt.Errorf("proxmox: power %s: %s", m.Ref.ID, out.Message)
 	}
 	return provider.PowerResult{State: want, Applied: true}, nil
+}
+
+// Resize implements provider.Resizer: read, compare, write only what
+// differs. Cores and memory go in one config POST; on a running guest without
+// that hotplug Proxmox keeps them pending until the next start, which Restart
+// does with a reboot (which applies pending changes). The boot disk only grows.
+func (s *session) Resize(ctx context.Context, m provider.Target, want provider.Size) (provider.Resized, error) {
+	node, vmid, cfg, absent, err := s.guard(ctx, m)
+	if err != nil {
+		return provider.Resized{}, err
+	}
+	if absent {
+		return provider.Resized{}, provider.Refused("proxmox: nothing at %s", m.Ref.ID)
+	}
+	if lock := cfg.str("lock"); lock != "" {
+		return provider.Resized{}, provider.Refused("proxmox: %s is locked (%s); try again once Proxmox releases it", m.Ref.ID, lock)
+	}
+	// cfg has pending changes applied, so this compares with what the guest
+	// will have, and a repeat after a lost answer sends nothing.
+	form := url.Values{}
+	if want.Cores > 0 && cfg.str("cores") != strconv.Itoa(want.Cores) {
+		form.Set("cores", strconv.Itoa(want.Cores))
+	}
+	if want.MemoryMB > 0 && cfg.str("memory") != strconv.Itoa(want.MemoryMB) {
+		form.Set("memory", strconv.Itoa(want.MemoryMB))
+	}
+	var out provider.Resized
+	if len(form) > 0 {
+		data, err := s.c.Call(ctx, http.MethodPost, fmt.Sprintf("/nodes/%s/qemu/%s/config", node, vmid), form)
+		if err == nil {
+			err = s.c.WaitIfTask(ctx, node, data, 2*time.Minute)
+		}
+		if err != nil {
+			return provider.Resized{}, unknownAfter("proxmox: resize "+m.Ref.ID, err)
+		}
+		out.Applied = true
+	}
+	if want.DiskGB > 0 {
+		grown, err := s.growDisk(ctx, node, vmid, cfg, want.DiskGB)
+		if err != nil {
+			return out, unknownAfter("proxmox: grow the disk of "+m.Ref.ID, err)
+		}
+		out.Applied = out.Applied || grown
+	}
+
+	pending, err := s.pendingSize(ctx, node, vmid)
+	if err != nil {
+		return out, unknownAfter("proxmox: read what "+m.Ref.ID+" runs with", err)
+	}
+	if !pending {
+		return out, nil
+	}
+	st, err := s.c.ReadPower(ctx, node, "qemu", vmid)
+	if err != nil {
+		return out, unknownAfter("proxmox: read the power of "+m.Ref.ID, err)
+	}
+	if !want.Restart || st.State() != "running" {
+		out.Pending = true
+		return out, nil
+	}
+	data, err := s.c.Call(ctx, http.MethodPost, fmt.Sprintf("/nodes/%s/qemu/%s/status/reboot", node, vmid), url.Values{})
+	if err == nil {
+		err = s.c.WaitIfTask(ctx, node, data, 5*time.Minute)
+	}
+	if err != nil {
+		return out, unknownAfter("proxmox: restart "+m.Ref.ID+" to apply its new size", err)
+	}
+	out.Restarted = true
+	if pending, err = s.pendingSize(ctx, node, vmid); err != nil {
+		return out, unknownAfter("proxmox: read what "+m.Ref.ID+" runs with after its restart", err)
+	} else if pending {
+		return out, fmt.Errorf("proxmox: %s restarted, but cores or memory are still pending", m.Ref.ID)
+	}
+	return out, nil
+}
+
+// pendingSize says whether cores or memory are set but not yet what the
+// guest runs with: the config read with pending changes applied differs from
+// the current one.
+func (s *session) pendingSize(ctx context.Context, node, vmid string) (bool, error) {
+	next, err := s.c.readConfig(ctx, node, vmid)
+	if err != nil {
+		return false, err
+	}
+	var raw map[string]json.RawMessage
+	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/qemu/%s/config?current=1", node, vmid), &raw); err != nil {
+		return false, err
+	}
+	now := guestConfig{raw: raw}
+	return next.str("cores") != now.str("cores") || next.str("memory") != now.str("memory"), nil
 }
 
 // Delete implements provider.Writer. See openspec accretion-apply, D6.

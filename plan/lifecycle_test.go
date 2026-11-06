@@ -226,3 +226,47 @@ func TestAnEmptiedEnvironmentPlansEveryMachineForRemoval(t *testing.T) {
 		})
 	}
 }
+
+// A machine built without disk_gb: the size the provider reports stands in
+// for the one never recorded, so the disk can be grown or declared at its
+// current size, and a shrink is still refused.
+func TestAnUndeclaredDiskIsJudgedByWhatTheProviderReports(t *testing.T) {
+	cases := []struct {
+		name    string
+		disk    int
+		blocked string
+	}{
+		{"grow", 22, ""},
+		{"at its current size", 20, ""},
+		{"a shrink", 15, "never shrunk: disk_gb (20 to 15)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := sizedWorld()
+			bp := sizedBlueprint
+			bp.Inputs = append([]BlueprintInput(nil), sizedBlueprint.Inputs...)
+			for i := range bp.Inputs {
+				if bp.Inputs[i].Name == "disk_gb" {
+					bp.Inputs[i].Observes = ObservedBootDiskGiB
+				}
+			}
+			w.Blueprints = []Blueprint{bp, reconfigureBP, destroyBP}
+			r := builtMachine(&w, 0, built("web-1", 2048))
+			w.Realizations = []Realization{r}
+			w.Observed = map[uuid.UUID]ObservedMachine{*r.AssetID: {
+				Values: map[string]float64{ObservedBootDiskGiB: 20.0001, ObservedMemoryMiB: 2048},
+				State:  ObservedRunning,
+			}}
+			e := Build(manifest(1, map[string]any{"hostname": "web-{{instance.number}}", "memory_mb": 2048, "disk_gb": c.disk}), w).Entries[0]
+			if c.blocked == "" {
+				if e.Action != ActionChange || e.Apply != ApplyReconfigure || e.Blocked != "" {
+					t.Fatalf("entry action=%s apply=%q blocked=%q, want a change in place", e.Action, e.Apply, e.Blocked)
+				}
+				return
+			}
+			if e.Apply != "" || !strings.Contains(e.Blocked, c.blocked) {
+				t.Fatalf("entry apply=%q blocked=%q, want blocked containing %q", e.Apply, e.Blocked, c.blocked)
+			}
+		})
+	}
+}

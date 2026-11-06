@@ -44,7 +44,18 @@ type Resource struct {
 	Identity Identity         `json:"identity"`
 	Facts    Facts            `json:"facts"`
 	Memory   MemoryAllocation `json:"memory"`
-	Raw      json.RawMessage  `json:"raw"`
+	// Pending is what the provider holds for the machine's next restart and
+	// does not run yet; nil when nothing is pending.
+	Pending *Pending        `json:"pending,omitempty"`
+	Raw     json.RawMessage `json:"raw"`
+}
+
+// Pending is a size set on a running machine that it takes only at its next
+// restart (on Proxmox, a memory change with memory hotplug off). Each field is
+// set only when it differs from what the machine runs with; 0 means nothing
+// is pending for it.
+type Pending struct {
+	RAMBytes int64 `json:"ram_bytes,omitempty"`
 }
 
 // Identity is what the provider knows that names the machine — the same
@@ -82,6 +93,7 @@ type MemoryAllocation struct {
 type Observation struct {
 	Facts      Facts            `json:"facts"`
 	Memory     MemoryAllocation `json:"memory"`
+	Pending    *Pending         `json:"pending,omitempty"`
 	State      string           `json:"state"`
 	ObservedAt time.Time        `json:"observed_at"`
 }

@@ -379,6 +379,12 @@ func (s *session) describeGuest(ctx context.Context, node, kind string, g guestR
 	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/%s/%d/status/current", node, kind, g.VMID), &st); err != nil {
 		errs = append(errs, fmt.Errorf("proxmox: %s: status: %w", id, err))
 	} else {
+		// The config read above has pending changes applied; status is
+		// what the guest runs with. A difference is a change waiting for
+		// the next restart, which the plan must not read as "as declared".
+		if configured := res.Memory.MaxBytes; kind == "qemu" && st.MaxMem > 0 && configured > 0 && configured != st.MaxMem {
+			res.Pending = &provider.Pending{RAMBytes: configured}
+		}
 		if st.MaxMem > 0 {
 			res.Memory.MaxBytes = st.MaxMem
 			res.Facts.RAMBytes = st.MaxMem
