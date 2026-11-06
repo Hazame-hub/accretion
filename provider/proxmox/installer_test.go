@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hazame-hub/accretion/provider"
+	"github.com/hazame-hub/accretion/provider/providertest"
 	"github.com/hazame-hub/accretion/provider/proxmox/pvetest"
 )
 
@@ -144,5 +145,36 @@ func TestInstallerVerbsRefuseAnotherGuest(t *testing.T) {
 	}
 	if len(pve.Writes()) != before {
 		t.Fatalf("writes: %v", pve.Writes()[before:])
+	}
+}
+
+// The Proxmox Installer passes the install contract against the in-memory
+// PVE. The install never ends on its own here: the suite stops the machine
+// as the kickstart's poweroff would.
+func TestProxmoxInstallContract(t *testing.T) {
+	pve := pvetest.New(t)
+	pve.Files[dvd] = make([]byte, 4096)
+	pve.InstallReads = -1
+	cfg := provider.Config{Endpoint: pve.URL, Params: map[string]any{"api_token": pvetest.Token}}
+	providertest.InstallContract(t, New(), cfg, pvetest.Secret, providertest.InstallFixture{
+		Placement: "pve1", Installer: dvd, MissingInstaller: "local:iso/rhel-10.iso",
+		DiskStorage: "local-lvm", SeedStorage: "local",
+		Foreign: provider.Ref{Kind: provider.KindVM, ID: "pve1/qemu/101"}, ForeignUUID: "6f2c9a10-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+		LoseNextCreateAnswer: func() { pve.DropNext(`^POST /nodes/pve1/qemu$`) },
+		SetStopped: func(ref provider.Ref) {
+			var vmid int
+			if _, err := fmt.Sscanf(ref.ID, "pve1/qemu/%d", &vmid); err != nil {
+				t.Fatalf("ref %v: %v", ref, err)
+			}
+			pve.SetStatus(vmid, "stopped")
+		},
+	})
+	if _, kept := pve.Files[dvd]; !kept {
+		t.Error("the installer ISO was removed")
+	}
+	for _, w := range pve.Writes() {
+		if strings.Contains(w, "/qemu/101") {
+			t.Errorf("the guest that was not the suite's was written to: %s", w)
+		}
 	}
 }
