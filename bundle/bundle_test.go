@@ -171,6 +171,9 @@ func runPre(t *testing.T, ks []byte, m machine) (code int, written, stderr strin
 		_ = os.Remove(out)
 		cmd := exec.Command(sh, "-c", script)
 		cmd.Env = append(os.Environ(), "ACCRETE_DMI="+dmi, "ACCRETE_NET="+net, "ACCRETE_OUT="+out)
+		if installerPath != "" {
+			cmd.Env = append(cmd.Env, "PATH="+installerPath)
+		}
 		var e bytes.Buffer
 		cmd.Stderr = &e
 		err := cmd.Run()
@@ -188,6 +191,31 @@ func runPre(t *testing.T, ks []byte, m machine) (code int, written, stderr strin
 		}
 	}
 	return code, written, stderr
+}
+
+// installerPath, when set, is the only PATH %pre runs with: the tools the
+// RHEL installer image is known to ship.
+var installerPath string
+
+// TestPreNeedsOnlyWhatTheInstallerShips runs %pre with a PATH holding only
+// commands the RHEL 9.6 installer image has. base64 is not among them: the
+// first lab run stopped on "base64: command not found".
+func TestPreNeedsOnlyWhatTheInstallerShips(t *testing.T) {
+	dir := t.TempDir()
+	for _, tool := range []string{"sh", "tr", "sed", "sort", "cat", "python3"} {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skipf("no %s on this host", tool)
+		}
+		must(t, os.Symlink(p, filepath.Join(dir, tool)))
+	}
+	installerPath = dir
+	defer func() { installerPath = "" }()
+	b, _ := Build(twoProfiles())
+	code, got, stderr := runPre(t, b.KS, machine{uuid: "4c4c4544-0042-3510-8051-b4c04f4e4d32", serial: ""})
+	if code != 0 || got != dbKS {
+		t.Fatalf("exit %d, wrote %q: %s", code, got, stderr)
+	}
 }
 
 func must(t *testing.T, err error) {

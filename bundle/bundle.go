@@ -262,6 +262,9 @@ func render(ps []profile) []byte {
 	w("uuid=$(tr 'A-F' 'a-f' < \"$dmi/product_uuid\" 2>/dev/null | tr -d '[:space:]')\n")
 	w("serial=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \"$dmi/product_serial\" 2>/dev/null)\n")
 	w("macs=$(cat \"$net\"/*/address 2>/dev/null | tr 'A-F' 'a-f' | sort -u | tr '\\n' ' ')\n")
+	// The RHEL installer image has no base64 or uudecode; Anaconda itself
+	// is Python, so python3 is always there (lab, RHEL 9.6, 2026-11-06).
+	w("decode='import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))'\n")
 	w("match=\"\"\n")
 	w("hit() { case \" $match \" in *\" $1 \"*) ;; *) match=\"${match:+$match }$1\" ;; esac; }\n")
 	for _, p := range ps {
@@ -289,7 +292,7 @@ func render(ps []profile) []byte {
 	w("echo \"accrete: installing profile $match (uuid=$uuid serial=$serial)\" >&2\n")
 	w("case \"$match\" in\n")
 	for _, p := range ps {
-		w("%s)\n  base64 -d > \"$out\" <<'ACCRETE_PROFILE'\n", p.name)
+		w("%s)\n  python3 -c \"$decode\" > \"$out\" <<'ACCRETE_PROFILE'\n", p.name)
 		enc := base64.StdEncoding.EncodeToString(p.body)
 		for len(enc) > 76 {
 			w("%s\n", enc[:76])
