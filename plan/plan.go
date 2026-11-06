@@ -794,7 +794,14 @@ func checkInputs(instances []Instance, world Snapshot) []string {
 	reported := map[string]bool{}
 	for _, in := range instances {
 		bp := blueprintByID(world.Blueprints, in.Blueprint)
-		if bp == nil || in.Unplaced {
+		if in.Unplaced {
+			continue
+		}
+		if bp == nil {
+			// Planned as a create, a blueprint the connector does not offer
+			// would be launched by an embedder that cannot run it (accrete's
+			// own install blueprint in Sybil, say): refused by name instead.
+			report(&errs, reported, fmt.Sprintf("resource %q: blueprint %q is not one this connector offers", in.Resource, in.Blueprint))
 			continue
 		}
 		specs := bp.Inputs

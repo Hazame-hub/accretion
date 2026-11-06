@@ -1,5 +1,7 @@
 package provider
 
+import "time"
+
 // Recipe is how one declared machine is built with a Writer: the clone it
 // starts from, where its seed goes and what the seed says. A provider turns a
 // blueprint and its inputs into one (proxmox.Recipe), so a command can build
@@ -19,4 +21,24 @@ type Recipe struct {
 	// Seed is where the seed of a machine minted with the given UUID is put,
 	// for its removal once the machine is gone.
 	Seed func(instanceID string) Placement
+	// Install is set when the machine is installed from installer media
+	// with an Installer rather than cloned: Clone is then unused.
+	Install *InstallRecipe
+}
+
+// InstallRecipe is how a machine is installed from installer media.
+type InstallRecipe struct {
+	// Create is the request without its per-machine guards, as Clone is.
+	Create CreateRequest
+	// AnswerFormat is the answer file's format; "kickstart" is the only one.
+	AnswerFormat string
+	// Disk is the guest's name for the disk Create makes, the only one the
+	// answer file may partition.
+	Disk string
+	// Timeout bounds one apply's wait for the installer to power the machine
+	// off.
+	Timeout time.Duration
+	// ISOSHA256 is the installer image's SHA-256 as the manifest declares it,
+	// "" for none. Recorded as declared: nothing checks it.
+	ISOSHA256 string
 }

@@ -21,3 +21,18 @@ func TestFakeWriteContract(t *testing.T) {
 		LoseNextCloneAnswer: f.InterruptNextClone,
 	})
 }
+
+// The Fake passes the install contract before any real provider has to.
+func TestFakeInstallContract(t *testing.T) {
+	f := fake.New()
+	cfg := provider.Config{Endpoint: "fake://estate", Params: map[string]any{"api_token": "fake-secret-token"}}
+	providertest.InstallContract(t, f, cfg, "fake-secret-token", providertest.InstallFixture{
+		Placement: "node1", Installer: "local:iso/installer.iso", MissingInstaller: "local:iso/missing.iso",
+		DiskStorage: "local-lvm", SeedStorage: "local",
+		Foreign: provider.Ref{Kind: provider.KindVM, ID: "101"}, ForeignUUID: "9a1d3c2b-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+		LoseNextCreateAnswer: f.LoseNextCreateAnswer,
+	})
+	if len(f.ISOs) != 1 {
+		t.Errorf("installer images after the contract: %v", f.ISOs)
+	}
+}

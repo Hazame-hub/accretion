@@ -23,8 +23,8 @@ const BuildableBlueprint = "provision-proxmox-vm"
 //
 // See openspec accretion-apply, D4 and D8.
 func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
-	if blueprint != BuildableBlueprint {
-		return provider.Recipe{}, fmt.Errorf("blueprint %q is not one accrete builds; v0.1 builds %s only", blueprint, BuildableBlueprint)
+	if blueprint != BuildableBlueprint && blueprint != InstallBlueprint {
+		return provider.Recipe{}, fmt.Errorf("blueprint %q is not one accrete builds; it builds %s and %s", blueprint, BuildableBlueprint, InstallBlueprint)
 	}
 	str := func(key, def string) string {
 		v, ok := inputs[key]
@@ -47,6 +47,9 @@ func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 			return 0, fmt.Errorf("input %s: %q is not a whole number", key, s)
 		}
 		return n, nil
+	}
+	if blueprint == InstallBlueprint {
+		return installRecipe(inputs, str, num)
 	}
 	for _, key := range []string{"ip_address", "gateway", "nameservers", "ip_address1", "ip_address2", "ip_address3"} {
 		if str(key, "") != "" {
