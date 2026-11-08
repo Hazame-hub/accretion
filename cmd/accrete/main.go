@@ -7,6 +7,7 @@
 //	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
 //	accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
 //	accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
+//	accrete verify --terraform-state PATH (-f env.yaml | --provider TYPE ...) [...]
 //
 // plan reads and never writes: it sends the provider GET requests only, no
 // machine is changed, and the state file is not rewritten. The plan comes
@@ -52,6 +53,7 @@ Usage:
   accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
+  accrete verify --terraform-state PATH (-f env.yaml | --provider TYPE --endpoint URL --token-env VAR) [...]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -73,6 +75,10 @@ paths to grant it on and how, and checks what the token has there now
 init --from-cluster writes a manifest and a state for the machines the
 provider already runs, then plans them (accrete init -h).
 
+verify checks a Terraform state against what the provider reports, resource
+by resource, and lists the machines the state does not record (accrete
+verify -h). GET requests only; it writes no state of either tool.
+
 Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
 declined, or a machine failed or was not done, 2 accrete could not plan or
 start (bad flags, bad manifest or state, no token or a refused one, a state
@@ -87,6 +93,9 @@ func main() {
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if len(args) > 0 && args[0] == "init" {
 		return runInit(ctx, args[1:], stdin, stdout, stderr, getenv)
+	}
+	if len(args) > 0 && args[0] == "verify" {
+		return runVerify(ctx, args[1:], stdin, stdout, stderr, getenv)
 	}
 	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy" && args[0] != "permissions") {
 		fmt.Fprint(stderr, usage)

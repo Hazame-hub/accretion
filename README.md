@@ -123,6 +123,7 @@ It holds no endpoint and no credential.
 | `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
+| `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
@@ -269,6 +270,57 @@ the state (a shutdown typed inside the guest leaves no task), the line says
 `changed by: unknown` and why. Proxmox records no task for a config change
 made through its synchronous API, and lists others' tasks only to a token
 with `Sys.Audit` on the node. JSON output carries it as `changed_by`.
+
+## Next to Terraform: `accrete verify --terraform-state`
+
+A fleet Terraform owns stays Terraform's. verify only reads, and it answers a
+question `terraform plan` does not: is what the state records still what runs,
+and if not, who changed it?
+
+```sh
+terraform -chdir=terraform show -json > state.json     # or pass terraform.tfstate, or its directory
+accrete verify --terraform-state state.json --provider proxmox \
+  --endpoint https://pve.example.lan:8006 --verify-tls=false --token-env ACCRETE_PROXMOX_TOKEN
+```
+
+```
+Terraform state state.json (show-json, written by Terraform 1.14.8) against https://pve.example.lan:8006
+  matches  module.sdn.proxmox_sdn_vnet.vnets["mgmt"]  (vmgmt)
+  differs  module.vms["mgmt-01"].proxmox_virtual_environment_vm.this  (pve1/qemu/202)
+             net1 is on the machine, not in the state (bridge=vweb, link=up, mac=bc:24:11:00:02:12, vlan=30)
+             cores: the state records 2, the provider reports 4
+             changed by hamza@pve at 2026-11-08T09:30:00Z (qmconfig)
+  unknown  module.vms["gone-01"].proxmox_virtual_environment_vm.this  the provider lists no vm qemu/203; it may be gone, or the token may not see it
+  matches  module.vms["web-01"].proxmox_virtual_environment_vm.this  (pve1/qemu/201)
+not in the Terraform state:
+  vm       db-01  (pve1/qemu/101)
+  not verified (accrete does not map these types): proxmox_sdn_zone_simple (8)
+  2 match, 1 differ, 1 unknown, 1 not in the state, 8 not verified
+```
+
+- **Input.** The output of `terraform show -json` (or `tofu show -json`) is
+  the stable format, and the one to use with a remote backend; `-` reads it
+  from standard input. A local `terraform.tfstate` (format 4), or the
+  directory holding it, is read too, as a best effort.
+- **What is compared.** For bpg/proxmox `proxmox_virtual_environment_vm`: the
+  VMID, name, node, SMBIOS UUID (when the state records one), cores, memory,
+  each disk's size, and each network card's bridge, MAC, VLAN tag and link,
+  with cards and disks the machine has and the state does not. For
+  `proxmox_sdn_vnet`: that the vnet exists, in its zone. Other types are
+  counted as not verified. Machines (not templates) the provider runs that
+  no resource records are listed; with `--select`, they are not.
+- **Power** is compared only with `--terraform-power`: bpg/proxmox records
+  `started` as the configuration asks, which is often in
+  `lifecycle.ignore_changes`.
+- **Who changed it** uses the same rule as `plan` (see below), so a change
+  Proxmox applied without a task, such as a card added through the API, is
+  `changed by: unknown`. A config task is evidence of a config change, not
+  of which field it touched.
+- **Secrets.** Values Terraform marks sensitive are dropped while the state is
+  read. Nothing from the state is written anywhere.
+- **Never written.** verify sends GET requests only and writes neither the
+  Terraform state nor an accrete state. A resource stays Terraform's: accrete
+  never gives a machine a second owner.
 
 ## What v0.1 does not do
 
