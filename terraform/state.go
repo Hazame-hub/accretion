@@ -74,10 +74,9 @@ type Instance struct {
 func ReadFile(path string, stdin io.Reader) (State, error) {
 	var src []byte
 	var err error
-	switch {
-	case path == "-":
+	if path == "-" {
 		src, err = io.ReadAll(stdin)
-	default:
+	} else {
 		var info os.FileInfo
 		if info, err = os.Stat(path); err == nil && info.IsDir() {
 			file := filepath.Join(path, "terraform.tfstate")
