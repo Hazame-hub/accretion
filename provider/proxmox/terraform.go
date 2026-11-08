@@ -303,3 +303,13 @@ func tfBool(v any) bool {
 	b, _ := v.(bool)
 	return b
 }
+
+// ClaimKey is the key a claim about the machine at ref carries, "" for a ref
+// no claim can be about.
+func ClaimKey(ref provider.Ref) string {
+	_, kind, vmid, err := splitRef(ref.ID)
+	if err != nil || kind != "qemu" {
+		return ""
+	}
+	return "qemu/" + vmid
+}

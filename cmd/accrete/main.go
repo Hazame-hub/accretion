@@ -48,9 +48,9 @@ import (
 const usage = `accrete plans and applies an Environment manifest.
 
 Usage:
-  accrete plan    -f env.yaml [--state FILE] [-o text|json] [--offline]
-  accrete apply   -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
-  accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
+  accrete plan    -f env.yaml [--state FILE] [--terraform-state PATH] [-o text|json] [--offline]
+  accrete apply   -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone]
+  accrete destroy -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone]
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
   accrete verify --terraform-state PATH (-f env.yaml | --provider TYPE --endpoint URL --token-env VAR) [...]
@@ -67,6 +67,11 @@ machine the state records for the environment. Both print the plan and ask
 for "yes" first, unless --auto-approve. A recorded machine the provider no
 longer lists keeps its record (the token may just not see it) unless
 --forget-gone.
+
+--terraform-state names a Terraform state (terraform show -json output, or
+a terraform.tfstate) whose machines accrete leaves alone: a line that would
+act on one of them, or create a machine of the same name, is an error, so
+apply and destroy refuse the plan. Each machine has one owner.
 
 permissions prints the role the token needs to apply the manifest, the
 paths to grant it on and how, and checks what the token has there now
@@ -120,11 +125,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if cmd == "permissions" {
 		role = fs.String("role", "", "the role's name (default: accrete- and the environment's name)")
 	}
+	tfState := new(string)
+	if cmd != "permissions" {
+		tfState = fs.String("terraform-state", "", "a Terraform state whose machines accrete must leave alone (terraform show -json output or terraform.tfstate)")
+	}
 	timeout := fs.Duration("timeout", defaultTimeout, "how long the whole command may take")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *file == "" || fs.NArg() > 0 || (!writes && *output != "text" && *output != "json") {
+	if *file == "" || fs.NArg() > 0 || (!writes && *output != "text" && *output != "json") || (writes && *tfState == "-") {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
@@ -154,6 +163,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if cmd == "permissions" {
 		return permissions(ctx, env, driver, dir, *offline, *output, *role, *timeout, stdout, stderr, getenv)
+	}
+	var owners *terraformOwners
+	if *tfState != "" {
+		if owners, err = loadOwners(*tfState, stdin, driver); err != nil {
+			return fail("%v", err)
+		}
 	}
 	if writes {
 		lock, err := lockState(*statePath, func(msg string) { fmt.Fprintf(stderr, "accrete: %s\n", msg) })
@@ -192,6 +207,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	p := plan.Build(planned, world)
 	world.confirm(&p)
 	world.attribute(&p)
+	owners.check(&p)
+	if owners != nil {
+		world.Notes = append(world.Notes, owners.summary())
+	}
 	if cmd == "destroy" {
 		// The planner says why from the manifest's side; destroy plans as if
 		// it declared nothing, so say what destroy is doing instead.

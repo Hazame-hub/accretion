@@ -29,14 +29,16 @@ rebuilt. It sends GET requests only, then runs accrete plan on the result.
 Usage:
   accrete init --from-cluster --provider TYPE --endpoint URL (--token-env VAR | --token-file F)
                [--name ENV] [--select REGEX] [--template VMID] [--verify-tls=false]
-               [-f env.yaml] [--state FILE]
+               [--terraform-state PATH] [-f env.yaml] [--state FILE]
 
 Machines named alike (web-1, web-2, web-3) with the same size and settings
 become one resource with a count. A machine that carries no identity, or
 whose name the blueprint cannot take, is left out and the reason printed.
 An input the machine does not show (the template a full clone came from) is
 never guessed: --template sets it for all of them, or the manifest leaves it
-as a variable to fill in. init never overwrites a file.
+as a variable to fill in. A machine the Terraform state given with
+--terraform-state records is left out: Terraform owns it. init never
+overwrites a file.
 `
 
 func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -53,6 +55,7 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	template := fs.String("template", "", "the template the machines came from, when the provider does not say")
 	file := fs.String("f", "env.yaml", "the manifest to write")
 	statePath := fs.String("state", "", "the state to write (default: accrete.state.json beside the manifest)")
+	tfState := fs.String("terraform-state", "", "a Terraform state whose machines are left out (Terraform owns them)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long the whole command may take")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -89,6 +92,13 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		sort.Strings(types)
 		return fail("accrete knows no provider of type %q; it knows %s", *ptype, strings.Join(types, ", "))
 	}
+	var owners *terraformOwners
+	if *tfState != "" {
+		var err error
+		if owners, err = loadOwners(*tfState, stdin, driver); err != nil {
+			return fail("%v", err)
+		}
+	}
 	ref := &envmanifest.ProviderRef{Type: *ptype, Endpoint: *endpoint, VerifyTLS: *verifyTLS, TokenEnv: *tokenEnv, TokenFile: *tokenFile}
 	if err := ref.Validate(); err != nil {
 		return fail("%v", err)
@@ -120,6 +130,9 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			continue
 		case d.Skip != "":
 			_, _ = fmt.Fprintf(stdout, "left out %s (%s): %s\n", d.Name, d.Ref.ID, d.Skip)
+			continue
+		case owners.owner(d.Ref) != "":
+			_, _ = fmt.Fprintf(stdout, "left out %s (%s): Terraform owns it (%s)\n", d.Name, d.Ref.ID, owners.owner(d.Ref))
 			continue
 		}
 		for k := range d.Unread {

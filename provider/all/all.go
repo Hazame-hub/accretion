@@ -49,12 +49,15 @@ type Terraform struct {
 	// Observe reads the same fields off a discovered resource; ok is false
 	// for a resource no claim is about.
 	Observe func(res provider.Resource) (provider.Observed, bool)
+	// Key is the claim key of the machine at ref, "" when no claim can be
+	// about it.
+	Key func(ref provider.Ref) string
 }
 
 var drivers = map[string]Driver{
 	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
 		Permissions: proxmox.Permissions,
-		Terraform:   &Terraform{Types: proxmox.TerraformTypes, Claim: proxmox.FromTerraform, Observe: proxmox.ClaimFields}},
+		Terraform:   &Terraform{Types: proxmox.TerraformTypes, Claim: proxmox.FromTerraform, Observe: proxmox.ClaimFields, Key: proxmox.ClaimKey}},
 }
 
 // Lookup returns the driver for a provider type.

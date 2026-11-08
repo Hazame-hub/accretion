@@ -119,9 +119,9 @@ It holds no endpoint and no credential.
 
 | Command | What it does |
 | --- | --- |
-| `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
-| `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
-| `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
+| `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
+| `accrete destroy -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
 | `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
@@ -318,6 +318,11 @@ not in the Terraform state:
   of which field it touched.
 - **Secrets.** Values Terraform marks sensitive are dropped while the state is
   read. Nothing from the state is written anywhere.
+- **One owner.** `plan`, `apply` and `destroy` take `--terraform-state` too.
+  A line that would act on a machine the state records, or create a machine
+  with the name of one, is then an error, so apply and destroy refuse the plan
+  before sending anything. `init --from-cluster --terraform-state` leaves the
+  machines Terraform owns out of the manifest it writes.
 - **Never written.** verify sends GET requests only and writes neither the
   Terraform state nor an accrete state. A resource stays Terraform's: accrete
   never gives a machine a second owner.
