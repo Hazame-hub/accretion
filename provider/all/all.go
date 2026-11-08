@@ -31,11 +31,30 @@ type Driver struct {
 	// role and the paths to grant it on; with a live session, also what the
 	// session's own credential lacks there now.
 	Permissions func(ctx context.Context, s provider.Session, role string, recipes []provider.Recipe) provider.Permissions
+	// Terraform maps the Terraform resources that describe this provider's
+	// machines; nil when the provider maps none.
+	Terraform *Terraform
+}
+
+// Terraform is how a provider reads a Terraform state's resources, so accrete
+// can verify them against what the provider reports and leave them to their
+// owner.
+type Terraform struct {
+	// Types lists the resource types Claim maps.
+	Types func() []string
+	// Claim maps one resource instance's attributes to what it claims; ok is
+	// false for a type the provider does not map. withPower also claims the
+	// power state.
+	Claim func(typ string, attrs map[string]any, withPower bool) (claim provider.Claim, ok bool, err error)
+	// Observe reads the same fields off a discovered resource; ok is false
+	// for a resource no claim is about.
+	Observe func(res provider.Resource) (provider.Observed, bool)
 }
 
 var drivers = map[string]Driver{
 	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
-		Permissions: proxmox.Permissions},
+		Permissions: proxmox.Permissions,
+		Terraform:   &Terraform{Types: proxmox.TerraformTypes, Claim: proxmox.FromTerraform, Observe: proxmox.ClaimFields}},
 }
 
 // Lookup returns the driver for a provider type.

@@ -117,6 +117,9 @@ type Server struct {
 	// lists it. The server's own mutations add nothing to it: a test writes
 	// the entries a change made by somebody would have left.
 	Tasks []Task
+	// Vnets are the cluster's applied SDN vnets, by name, each with its
+	// zone, as GET /cluster/sdn/vnets lists them.
+	Vnets map[string]string
 }
 
 // Task is one entry of the task log.
@@ -438,6 +441,17 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			have[priv] = 1
 		}
 		data(map[string]any{path: have})
+	case r.Method == http.MethodGet && p == "/cluster/sdn/vnets":
+		rows := []map[string]any{}
+		names := make([]string, 0, len(s.Vnets))
+		for n := range s.Vnets {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			rows = append(rows, map[string]any{"vnet": n, "zone": s.Vnets[n], "type": "vnet"})
+		}
+		data(rows)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
 		data([]any{})
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":
