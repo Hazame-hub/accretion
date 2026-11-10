@@ -131,6 +131,10 @@ apply and destroy): how long the whole command may run.
 
 **What apply does with each plan line:**
 - **create:** clone the template, seed cloud-init, start the machine, confirm it, record it.
+  With more than one card or a fixed address, the seed's network config
+  names each card by the MAC Proxmox gave it at clone time, so each card gets
+  its own addressing whatever the guest calls its interfaces. Two machines
+  declared with the same fixed address are a plan error.
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **change** of cores, memory or disk size (the manifest changed, or the
@@ -224,7 +228,11 @@ instances would be identical is refused.
 | `memory_mb` | 2048 | |
 | `disk_gb` | 0 | Grows the boot disk to at least this. 0 keeps the template's. |
 | `cpu` | `x86-64-v2-AES` | A CPU model name. |
-| `net0` | `virtio,bridge=vmbr0` | The one network card, for example `virtio,bridge=vmbr0,tag=30`. |
+| `net0` | `virtio,bridge=vmbr0` | The first network card, for example `virtio,bridge=vmbr0,tag=30`. |
+| `net1`..`net3` | none | More cards, numbered without a gap. Each names its bridge. |
+| `ip_address` | none (DHCP) | The first card's fixed address with its prefix, `10.10.0.10/24`. `ip_address1`..`ip_address3` do the same for the other cards; a card without one takes DHCP. |
+| `gateway` | none | The default route, through the first card; needs `ip_address`, and must be in its network. |
+| `nameservers` | none | Comma-separated, with a fixed address. |
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
 | `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
 
@@ -334,8 +342,6 @@ apply refuses these before sending anything, and exits 1:
 - **Networks.** A plan line for a network that is not "unchanged" is refused,
   because accrete does not create SDN zones or vnets.
 - **Firewalls.** A resource that declares `firewall:` is refused.
-- **Fixed addresses and more than one card.** Machines take DHCP on their first
-  card. `ip_address*`, `gateway`, `nameservers` and `net1`..`net3` are refused.
 - **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
   accrete has no secret store.
 - **Other blueprints.** Only `provision-proxmox-vm` is built. Installer-ISO and

@@ -208,6 +208,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	world.confirm(&p)
 	world.attribute(&p)
 	owners.check(&p)
+	checkAddresses(&p)
 	if owners != nil {
 		world.Notes = append(world.Notes, owners.summary())
 	}

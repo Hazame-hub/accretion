@@ -510,6 +510,8 @@ func (s *session) GuestInit(ctx context.Context, m provider.Target, seed provide
 		network := seed.NetworkConfig
 		if network == nil {
 			network = []byte(dhcpNetworkConfig)
+		} else if network, err = fillMACs(network, cfg); err != nil {
+			return provider.Placement{}, provider.Refused("%v", err)
 		}
 		iso, err := BuildNoCloudISO(map[string][]byte{
 			"user-data": seed.UserData, "meta-data": seed.MetaData, "network-config": network,
