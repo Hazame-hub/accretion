@@ -1,0 +1,32 @@
+# accrete pxe -f install.yaml     (or: accrete bundle -f install.yaml)
+#
+# The lab proof of 2026-11-06 ran this shape: a proxy DHCP and a web server
+# in one LXC at 192.168.1.212, RHEL 9.6 kernel and initrd taken from the
+# DVD's images/pxeboot, the DVD itself in the VM's CD drive (repo: cdrom).
+apiVersion: accretion/v1alpha1
+kind: NetworkInstall
+metadata:
+  name: lab
+spec:
+  server: http://192.168.1.212:8088
+  subnet: 192.168.1.0/24
+  tftp_root: /srv/tftp
+  media:
+    - name: rhel-9.6
+      kernel: rhel96/vmlinuz
+      initrd: rhel96/initrd.img
+      repo: cdrom
+  machines:
+    - name: accrete-pxe-a
+      uuids: ["9e486d4f-a8f8-4843-b705-9f396474994f"]
+      macs: ["bc:24:11:ac:ce:01"]
+      media: rhel-9.6
+      kickstart: profiles/accrete-pxe-a.ks
+      armed: true
+    # A physical server: select it by its serial number, and limit the
+    # install to one disk by a stable path.
+    - name: rack-01
+      serials: ["CZJ1234ABC"]
+      media: rhel-9.6
+      kickstart: profiles/rack-01.ks
+      armed: false
