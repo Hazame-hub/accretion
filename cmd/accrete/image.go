@@ -41,10 +41,16 @@ type ImageRecord struct {
 	ImageVolume  string     `json:"image_volume"`
 	ImageSize    int64      `json:"image_size"`
 	ImageCreated *time.Time `json:"image_created,omitempty"`
-	// ImageSHA256Declared is the manifest's image_sha256, never verified.
+	// ImageSHA256Declared is the manifest's image_sha256, never verified:
+	// the image was already on the provider's storage.
 	ImageSHA256Declared string `json:"image_sha256_declared,omitempty"`
-	SeedFormat          string `json:"seed_format"`
-	SeedSHA256          string `json:"seed_sha256,omitempty"`
+	// ImageURL is where the manifest says the image comes from, and
+	// ImageSHA256Fetched the hash of the file this build downloaded from
+	// it, checked against the manifest's before it was uploaded.
+	ImageURL           string `json:"image_url,omitempty"`
+	ImageSHA256Fetched string `json:"image_sha256_fetched,omitempty"`
+	SeedFormat         string `json:"seed_format"`
+	SeedSHA256         string `json:"seed_sha256,omitempty"`
 }
 
 // The steps of a build from a disk image that its others do not share.
@@ -97,11 +103,16 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 		switch r.Step {
 		case stepCreate:
 			req := rec.Image.Create
-			media, err := in.Media(a.ctx, req.Placement, req.Image)
+			media, checked, err := a.ensureImage(rec)
 			if err != nil {
 				return fmt.Errorf("image: %w", err)
 			}
-			r.Image = &ImageRecord{ImageVolume: media.Volume, ImageSize: media.Size, ImageSHA256Declared: rec.Image.ImageSHA256, SeedFormat: rec.Image.SeedFormat}
+			r.Image = &ImageRecord{ImageVolume: media.Volume, ImageSize: media.Size, SeedFormat: rec.Image.SeedFormat, ImageURL: rec.Image.URL}
+			if checked {
+				r.Image.ImageSHA256Fetched = rec.Image.ImageSHA256
+			} else {
+				r.Image.ImageSHA256Declared = rec.Image.ImageSHA256
+			}
 			if !media.Created.IsZero() {
 				at := media.Created
 				r.Image.ImageCreated = &at
@@ -232,6 +243,9 @@ func (a *applier) confirmImage(run uuid.UUID, rec provider.Recipe) error {
 		}
 		if r.Image.ImageSHA256Declared != "" {
 			image += ", SHA-256 " + r.Image.ImageSHA256Declared + " as declared (not checked)"
+		}
+		if r.Image.ImageSHA256Fetched != "" {
+			image += ", fetched from " + r.Image.ImageURL + " with SHA-256 " + r.Image.ImageSHA256Fetched + " (checked on download)"
 		}
 		a.printf("  built from %s\n", image)
 	}

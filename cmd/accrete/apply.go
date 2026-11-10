@@ -116,8 +116,10 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				}
 			}
 			if rec.Image != nil {
-				// So must the disk image.
-				if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image); err != nil {
+				// So must the disk image, unless accrete is to fetch it.
+				_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
+				var refused *provider.RefusedError
+				if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
 					refuse("%s: %v", name, err)
 					continue
 				}

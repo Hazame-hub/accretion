@@ -123,6 +123,7 @@ It holds no endpoint and no credential.
 | `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
+| `accrete image fedora-coreos [--stream stable\|testing\|next] [--storage S] [--arch A]` | Prints the `image`, `image_url` and `image_sha256` inputs pinning `image-proxmox-vm` to the stream's current Fedora CoreOS proxmoxve image. Asks Fedora's stream metadata only; changes nothing. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
@@ -328,19 +329,25 @@ manifest, in one of two formats:
               sudo: true
 ```
 
-**Getting the image onto Proxmox (VE 8.2 or later):** enable the `Import`
-content on a storage (Datacenter → Storage → `local` → Edit → Content), then
-on that storage's **Import** tab use *Download from URL* or *Upload*. Fedora
-CoreOS publishes its `proxmoxve` image as `qcow2.xz`: decompress it first if
-the dialog cannot (`xz -d`, or 7-Zip on Windows). See
-`examples/fedora-coreos.yaml`.
+**accrete fetches the image itself.** Give `image_url` and `image_sha256`:
+when the storage does not have `image` yet, apply downloads the file on the
+machine running accrete, checks its SHA-256 against the manifest before
+anything is sent, decompresses it (`.xz` or `.gz`) and uploads it as `image`.
+A file whose hash differs is never uploaded, and an image already there is
+never overwritten. For Fedora CoreOS, `accrete image fedora-coreos [--stream
+stable] [--storage local]` prints those inputs for the current release, read
+from Fedora's stream metadata. The one thing left to do in Proxmox, once, is to
+let the storage hold disk images (Proxmox VE 8.2 or later): Datacenter →
+Storage → `local` → Edit → Content → add **Import**. apply names it when it is
+missing. See `examples/fedora-coreos.yaml`.
 
 | Input | Default | Notes |
 | --- | --- | --- |
 | `pve_node` | `pve` | |
 | `hostname` | (required) | The VM's name and the hostname its seed sets. |
 | `image` | (required) | `storage:import/name.qcow2` (or `.raw`, `.vmdk`). accrete never removes it. |
-| `image_sha256` | none | Recorded as declared. accrete cannot hash a file on the node's storage, so it never says it checked it. |
+| `image_url` | none | Where to fetch the image from when the storage lacks it (`http` or `https`; `.xz` and `.gz` are decompressed). Needs `image_sha256`. |
+| `image_sha256` | none | With `image_url`: the SHA-256 of the file at that URL, checked on download. Without: recorded as declared, since accrete cannot hash a file on the node's storage. |
 | `seed_format` | `cloud-init` | `cloud-init` or `ignition`. |
 | `first_boot_timeout_minutes` | 15 | How long one apply waits for the first boot to power the machine off. |
 | `seed_storage` | `local` | Takes ISO content; holds the machine's seed disc. |
@@ -366,13 +373,15 @@ nothing more is read from inside it; when an image has one, its hostname must
 be the declared one.
 
 **What is recorded:** the image's volume, size and date as Proxmox lists them,
-the seed's format and SHA-256, and any declared image hash marked as declared
-(`images` in the state).
+the seed's format and SHA-256, and the image hash: checked, with its URL, when
+this build fetched the image; otherwise marked as declared (`images` in the
+state).
 
 **Permissions:** no template and no guest agent. `Datastore.Audit` on the
 image's storage (to find and copy it), the disk storage, the seed storage,
-`/vms` (including `VM.Config.HWType` for the serial port). `accrete
-permissions` lists them.
+`/vms` (including `VM.Config.HWType` for the serial port), and
+`Datastore.AllocateTemplate` on the image's storage when accrete is to upload
+it. `accrete permissions` lists them.
 
 Sybil does not run this blueprint yet.
 

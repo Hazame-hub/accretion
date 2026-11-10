@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -183,4 +184,29 @@ func (s *session) RemoveMedia(_ context.Context, m provider.Target, answer provi
 	delete(ws.answer, m.Ref)
 	delete(ws.seeds, answer.Volume)
 	return applied, nil
+}
+
+var _ provider.ImageUploader = (*session)(nil)
+
+// UploadImage implements provider.ImageUploader: the image joins ISOs with
+// the size of what was read.
+func (s *session) UploadImage(_ context.Context, placement, volume string, body io.Reader) error {
+	n, err := io.Copy(io.Discard, body)
+	if err != nil {
+		return err
+	}
+	f := s.fake
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.find(provider.Ref{Kind: provider.KindHost, ID: placement}) < 0 {
+		return provider.Refused("fake: no node %q", placement)
+	}
+	if !strings.Contains(volume, ":import/") {
+		return provider.Refused("fake: %q is not a disk image volume", volume)
+	}
+	if _, ok := f.ISOs[volume]; ok {
+		return provider.Refused("fake: %s is already there; an image is never overwritten", volume)
+	}
+	f.ISOs[volume] = n
+	return nil
 }

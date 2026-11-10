@@ -1,7 +1,10 @@
 package proxmox
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -27,6 +30,9 @@ const DefaultFirstBootTimeout = 15 * time.Minute
 // input names it. Proxmox VE 8.2 and later keep qcow2, raw and vmdk there.
 var importVolume = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9._-]*):import/([A-Za-z0-9][A-Za-z0-9._+-]*\.(qcow2|raw|vmdk))$`)
 
+// imageURL is where an image is fetched from.
+var imageURL = regexp.MustCompile(`^https?://[A-Za-z0-9.-]+(:[0-9]+)?/[^\s]*$`)
+
 // ImageBlueprints is the blueprints that build from a disk image.
 func ImageBlueprints() []plan.Blueprint {
 	return []plan.Blueprint{{
@@ -47,8 +53,10 @@ func ImageBlueprints() []plan.Blueprint {
 				Help: "DNS-label characters only: the VM's name and the hostname its seed sets.", Observes: "name"},
 			{Name: "image", Type: "string", Required: true, Label: "Disk image",
 				Help: "Volume id of the image in a storage's import content, e.g. local:import/fedora-coreos-44.20261023.3.1-proxmoxve.x86_64.qcow2. accrete never removes it."},
-			{Name: "image_sha256", Type: "string", Label: "Disk image SHA-256 (declared)",
-				Help: "Recorded as declared. accrete cannot hash a file on the node's storage, so it never says it checked it."},
+			{Name: "image_url", Type: "string", Label: "Disk image URL",
+				Help: "Where accrete fetches the image from when the storage does not have it yet: downloaded on the machine running accrete, checked against image_sha256, decompressed when it ends in .xz or .gz, and uploaded as image. `accrete image fedora-coreos` prints the current one."},
+			{Name: "image_sha256", Type: "string", Label: "Disk image SHA-256",
+				Help: "With image_url: the SHA-256 of the file at that URL, checked before anything is uploaded. Without: recorded as declared, since accrete cannot hash a file on the node's storage."},
 			{Name: "seed_format", Type: "string", Default: provider.SeedCloudInit, Label: "First-boot config format",
 				Help: "cloud-init for images that run cloud-init; ignition for Fedora CoreOS and other images that run Ignition."},
 			{Name: "first_boot_timeout_minutes", Type: "int", Default: 15, Label: "First boot deadline (minutes)",
@@ -90,6 +98,7 @@ func imageRecipe(inputs map[string]any, str func(string, string) string, num fun
 	disk := str("disk_storage", "local-lvm")
 	format := str("seed_format", provider.SeedCloudInit)
 	sum := str("image_sha256", "")
+	from := str("image_url", "")
 	cpu := str("cpu", "x86-64-v2-AES")
 	switch {
 	case format != provider.SeedCloudInit && format != provider.SeedIgnition:
@@ -106,6 +115,10 @@ func imageRecipe(inputs map[string]any, str func(string, string) string, num fun
 		return provider.Recipe{}, fmt.Errorf("input disk_storage: %q is not a storage name", disk)
 	case sum != "" && !sha256Hex.MatchString(sum):
 		return provider.Recipe{}, fmt.Errorf("input image_sha256: %q is not a SHA-256 in hex", sum)
+	case from != "" && !imageURL.MatchString(from):
+		return provider.Recipe{}, fmt.Errorf("input image_url: %q is not an http or https URL", from)
+	case from != "" && sum == "":
+		return provider.Recipe{}, errors.New("input image_url: a fetched image needs image_sha256, the hash of the file at that URL, so accrete can check what it downloaded")
 	case !cpuModel.MatchString(cpu):
 		return provider.Recipe{}, fmt.Errorf("input cpu: %q is not a model name", cpu)
 	}
@@ -138,6 +151,47 @@ func imageRecipe(inputs map[string]any, str func(string, string) string, num fun
 			SeedFormat:  format,
 			Timeout:     time.Duration(sizes["first_boot_timeout_minutes"]) * time.Minute,
 			ImageSHA256: strings.ToLower(sum),
+			URL:         from,
 		},
 	}, nil
+}
+
+var _ provider.ImageUploader = (*session)(nil)
+
+// imageUploadTimeout bounds one image upload: a Fedora CoreOS image is about
+// 1.7 GiB once decompressed.
+const imageUploadTimeout = 2 * time.Hour
+
+// UploadImage implements provider.ImageUploader: an upload to the storage's
+// import content, refused when the volume is already there.
+func (s *session) UploadImage(ctx context.Context, node, volume string, body io.Reader) error {
+	m := importVolume.FindStringSubmatch(volume)
+	switch {
+	case m == nil:
+		return provider.Refused("proxmox: %q is not a disk image in a storage's import content", volume)
+	case !nodeName.MatchString(node):
+		return provider.Refused("proxmox: %q is not a node name", node)
+	}
+	if _, err := s.Media(ctx, node, volume); err == nil {
+		return provider.Refused("proxmox: %s is already on %s; an image is never overwritten", volume, node)
+	} else if refused := (*provider.RefusedError)(nil); !errors.As(err, &refused) {
+		return err
+	}
+	var stores []struct {
+		Storage string `json:"storage"`
+	}
+	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/storage?content=import", node), &stores); err != nil {
+		return fmt.Errorf("proxmox: list the storages of %s that take disk images: %w", node, err)
+	}
+	takes := false
+	for _, st := range stores {
+		takes = takes || st.Storage == m[1]
+	}
+	if !takes {
+		return provider.Refused("proxmox: storage %s on %s does not take disk images; add the Import content to it once (Datacenter → Storage → %s → Edit → Content)", m[1], node, m[1])
+	}
+	if err := s.c.StorageUploadStream(ctx, node, m[1], "import", m[2], body, imageUploadTimeout); err != nil {
+		return unknownAfter("proxmox: upload the image "+volume, err)
+	}
+	return nil
 }

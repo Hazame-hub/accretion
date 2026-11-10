@@ -262,3 +262,49 @@ func (c *Client) StorageUpload(ctx context.Context, node, storage, content, file
 	}
 	return c.WaitIfTask(ctx, node, wrapper.Data, timeout)
 }
+
+// StorageUploadStream is StorageUpload for a body too large to hold in
+// memory, a disk image: the multipart form is written as it is sent.
+func (c *Client) StorageUploadStream(ctx context.Context, node, storage, content, filename string, body io.Reader, timeout time.Duration) error {
+	pr, pw := io.Pipe()
+	w := multipart.NewWriter(pw)
+	go func() {
+		err := w.WriteField("content", content)
+		if err == nil {
+			var fw io.Writer
+			if fw, err = w.CreateFormFile("filename", filename); err == nil {
+				if _, err = io.Copy(fw, body); err == nil {
+					err = w.Close()
+				}
+			}
+		}
+		pw.CloseWithError(err)
+	}()
+
+	sendCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	url := fmt.Sprintf("%s/api2/json/nodes/%s/storage/%s/upload", c.BaseURL, node, storage)
+	req, err := http.NewRequestWithContext(sendCtx, http.MethodPost, url, pr)
+	if err != nil {
+		_ = pr.CloseWithError(err)
+		return err
+	}
+	req.Header.Set("Authorization", c.Token)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		_ = pr.CloseWithError(err)
+		return fmt.Errorf("proxmox: upload %s: %w", filename, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return newAPIError(resp)
+	}
+	var wrapper struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		return fmt.Errorf("proxmox: decode upload response: %w", err)
+	}
+	return c.WaitIfTask(ctx, node, wrapper.Data, timeout)
+}

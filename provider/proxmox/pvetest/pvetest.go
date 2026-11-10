@@ -132,6 +132,9 @@ type Server struct {
 	// ImageGiB is the virtual size of a disk copied from an image, by
 	// volid; 10 when unset.
 	ImageGiB map[string]int
+	// NoImportContent lists the storage local without the import content,
+	// as a Proxmox VE whose operator never enabled it.
+	NoImportContent bool
 	// BrokenFirstBoot makes every simulated first boot hang instead of
 	// powering off, as a machine whose Ignition config failed does.
 	BrokenFirstBoot bool
@@ -340,7 +343,7 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 	}
 	var form url.Values
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
-		_ = r.ParseMultipartForm(32 << 20)
+		_ = r.ParseMultipartForm(64 << 20)
 		form = url.Values{}
 		for k, v := range r.MultipartForm.Value {
 			form[k] = v
@@ -515,10 +518,20 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
 		data([]any{})
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":
-		data([]map[string]any{
-			{"storage": "local", "type": "dir", "content": "iso,vztmpl,import", "active": 1, "enabled": 1, "total": 53687091200, "used": 10737418240, "avail": 42949672960},
+		localContent := "iso,vztmpl,import"
+		if s.NoImportContent {
+			localContent = "iso,vztmpl"
+		}
+		rows := []map[string]any{}
+		for _, row := range []map[string]any{
+			{"storage": "local", "type": "dir", "content": localContent, "active": 1, "enabled": 1, "total": 53687091200, "used": 10737418240, "avail": 42949672960},
 			{"storage": "local-lvm", "type": "lvmthin", "content": "images,rootdir", "active": 1, "enabled": 1, "total": 107374182400, "used": 32212254720, "avail": 75161927680},
-		})
+		} {
+			if want := r.URL.Query().Get("content"); want == "" || strings.Contains(","+row["content"].(string)+",", ","+want+",") {
+				rows = append(rows, row)
+			}
+		}
+		data(rows)
 	case storePath.MatchString(p):
 		s.storage(r.Method, storePath.FindStringSubmatch(p), form, data, fail, task)
 	case guestPath.MatchString(p):
@@ -550,12 +563,12 @@ func (s *Server) storage(method string, m []string, form url.Values, data func(a
 		}
 		data(rows)
 	case method == http.MethodPost && what == "upload":
-		name := form.Get("filename")
-		if form.Get("content") != "iso" {
-			fail(http.StatusBadRequest, "pvetest: only iso uploads are simulated")
+		name, content := form.Get("filename"), form.Get("content")
+		if content != "iso" && content != "import" {
+			fail(http.StatusBadRequest, "pvetest: only iso and import uploads are simulated")
 			return
 		}
-		s.Files[store+":iso/"+name] = []byte(form.Get("(body)"))
+		s.Files[store+":"+content+"/"+name] = []byte(form.Get("(body)"))
 		task()
 	case method == http.MethodDelete && what == "content":
 		vol, _ := url.PathUnescape(rest)

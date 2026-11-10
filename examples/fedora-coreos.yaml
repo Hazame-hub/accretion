@@ -4,12 +4,11 @@
 #   ACCRETE_PROXMOX_TOKEN='user@realm!tokenid=secret' \
 #     go run ./cmd/accrete apply -f examples/fedora-coreos.yaml
 #
-# Before the first apply, put the image on a storage's Import content
-# (Proxmox VE 8.2 or later): Datacenter → Storage → local → Edit → Content:
-# add Import; then local → Import → Download from URL (or Upload) with the
-# proxmoxve qcow2 from https://fedoraproject.org/coreos/download (stream
-# stable, platform Proxmox VE). It is published as .qcow2.xz: decompress it
-# first if the dialog cannot.
+# apply fetches the image itself when the storage does not have it:
+# downloaded here, checked against image_sha256, decompressed, uploaded.
+# `accrete image fedora-coreos` prints the image lines for the current
+# stable release. Once, in Proxmox VE 8.2 or later, let the storage hold
+# disk images: Datacenter → Storage → local → Edit → Content: add Import.
 apiVersion: accretion/v1alpha1
 kind: Environment
 metadata:
@@ -27,7 +26,11 @@ spec:
       inputs:
         pve_node: pve
         hostname: fcos-{{instance.number}}
+        # From `accrete image fedora-coreos`; run it again for the current
+        # release. A hash that does not match only stops the upload.
         image: local:import/fedora-coreos-44.20261023.3.1-proxmoxve.x86_64.qcow2
+        image_url: https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20261023.3.1/x86_64/fedora-coreos-44.20261023.3.1-proxmoxve.x86_64.qcow2.xz
+        image_sha256: 8182e2b95824b4e6c42eaaab791685bbfcb1b704fe55758aeff0a2a14a319648
         seed_format: ignition
         disk_gb: 20
         cores: 2

@@ -52,6 +52,7 @@ Usage:
   accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
+  accrete image fedora-coreos [--stream stable] [--storage local]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -70,6 +71,9 @@ permissions prints the role the token needs to apply the manifest, the
 paths to grant it on and how, and checks what the token has there now
 (GET requests only; --offline checks nothing).
 
+image fedora-coreos prints the inputs that pin image-proxmox-vm to the
+current Fedora CoreOS image; apply fetches and uploads it itself.
+
 init --from-cluster writes a manifest and a state for the machines the
 provider already runs, then plans them (accrete init -h).
 
@@ -87,6 +91,9 @@ func main() {
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if len(args) > 0 && args[0] == "init" {
 		return runInit(ctx, args[1:], stdin, stdout, stderr, getenv)
+	}
+	if len(args) > 0 && args[0] == "image" {
+		return runImage(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy" && args[0] != "permissions") {
 		fmt.Fprint(stderr, usage)

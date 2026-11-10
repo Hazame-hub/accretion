@@ -52,8 +52,13 @@ type ImageRecipe struct {
 	// machine off.
 	Timeout time.Duration
 	// ImageSHA256 is the image's SHA-256 as the manifest declares it, ""
-	// for none. Recorded as declared: nothing checks it.
+	// for none. Recorded as declared unless accrete fetched the image from
+	// URL, in which case it is the hash of the downloaded file, checked.
 	ImageSHA256 string
+	// URL, when set, is where accrete fetches the image from when the
+	// provider does not have it yet. ImageSHA256 is then required. A URL
+	// ending in .xz or .gz is decompressed before upload.
+	URL string
 }
 
 // InstallRecipe is how a machine is installed from installer media.

@@ -200,6 +200,9 @@ func addImage(b *grantBuilder, r provider.Recipe) {
 	b.add("/storage/"+c.DiskStorage, privsDiskStorage, "copy each machine's disk from the image and grow it", false)
 	if m := importVolume.FindStringSubmatch(c.Image); m != nil {
 		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the disk image and copy it", false)
+		if r.Image.URL != "" {
+			b.add("/storage/"+m[1], []string{"Datastore.AllocateTemplate"}, "upload the disk image accrete fetches when the storage does not have it yet", false)
+		}
 	}
 	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's seed disc", false)
 	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)

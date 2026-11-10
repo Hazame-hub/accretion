@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -79,4 +80,15 @@ type Answer struct {
 	// InstanceID names the disc. The caller mints it once per machine (the
 	// minted SMBIOS UUID), so a retry places the same disc.
 	InstanceID string
+}
+
+// ImageUploader is an Installer that can be handed a disk image: accrete
+// fetches and checks the image itself, then puts it on the provider's
+// storage under the volume a build names, so nobody uploads it by hand.
+// Optional, found by type assertion.
+type ImageUploader interface {
+	// UploadImage stores body as volume (a disk image in a storage's import
+	// content) on placement. It refuses a volume that is already there:
+	// an image is never overwritten.
+	UploadImage(ctx context.Context, placement, volume string, body io.Reader) error
 }
