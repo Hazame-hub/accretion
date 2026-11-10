@@ -18,7 +18,10 @@ type terraformOwners struct {
 	byKey map[string]string
 	// byName maps a machine's name to the Terraform address owning it.
 	byName map[string]string
-	key    func(provider.Ref) string
+	// instances counts the VM instances under each address with its
+	// instance keys removed (module.vms.proxmox_virtual_environment_vm.this).
+	instances map[string]int
+	key       func(provider.Ref) string
 }
 
 // loadOwners reads the machines a Terraform state owns.
@@ -30,13 +33,14 @@ func loadOwners(path string, stdin io.Reader, driver all.Driver) (*terraformOwne
 	if err != nil {
 		return nil, fmt.Errorf("--terraform-state: %w", err)
 	}
-	o := &terraformOwners{source: st.Source, byKey: map[string]string{}, byName: map[string]string{}, key: driver.Terraform.Key}
+	o := &terraformOwners{source: st.Source, byKey: map[string]string{}, byName: map[string]string{}, instances: map[string]int{}, key: driver.Terraform.Key}
 	for _, in := range st.Instances {
 		c, ok, err := driver.Terraform.Claim(in.Type, in.Attributes, false)
 		if !ok || err != nil || (c.Kind != provider.KindVM && c.Kind != provider.KindTemplate) {
 			continue
 		}
 		o.byKey[c.Key] = in.Address
+		o.instances[withoutKeys(in.Address)]++
 		if c.Name != "" {
 			o.byName[c.Name] = in.Address
 		}

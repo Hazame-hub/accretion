@@ -52,12 +52,16 @@ type Terraform struct {
 	// Key is the claim key of the machine at ref, "" when no claim can be
 	// about it.
 	Key func(ref provider.Ref) string
+	// Import is the Terraform resource type and import ID of the machine at
+	// ref, for an import block; ok is false when Terraform cannot take it.
+	Import func(ref provider.Ref) (typ, id string, ok bool)
 }
 
 var drivers = map[string]Driver{
 	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
 		Permissions: proxmox.Permissions,
-		Terraform:   &Terraform{Types: proxmox.TerraformTypes, Claim: proxmox.FromTerraform, Observe: proxmox.ClaimFields, Key: proxmox.ClaimKey}},
+		Terraform: &Terraform{Types: proxmox.TerraformTypes, Claim: proxmox.FromTerraform, Observe: proxmox.ClaimFields, Key: proxmox.ClaimKey,
+			Import: proxmox.TerraformImport}},
 }
 
 // Lookup returns the driver for a provider type.

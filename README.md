@@ -124,6 +124,8 @@ It holds no endpoint and no credential.
 | `accrete destroy -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
 | `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
+| `accrete import --from-terraform STATE --provider T --endpoint URL --token-env V [--select RE] [--template ID]` | Adopts the VMs a Terraform state records and writes `terraform-handover.tf` (removed blocks) for Terraform to forget them without destroying them. GET requests only. |
+| `accrete export --terraform -f env.yaml [--select RE]` / `accrete export --retire --terraform-state P -f env.yaml` | Writes import blocks for Terraform to take machines over; then retires accrete's records of those Terraform now records. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
@@ -335,6 +337,44 @@ not in the Terraform state:
   Terraform state nor an accrete state. A resource stays Terraform's: accrete
   never gives a machine a second owner.
 
+### Handing machines over, both ways
+
+Each direction goes through Terraform's own blocks. accrete never edits a
+Terraform state and never runs `terraform` for you.
+
+**From Terraform to accrete:** `accrete import --from-terraform STATE` (the
+same as `accrete init --from-terraform`) declares only the VMs that state
+records (`--select` matches their name or Terraform address), adopts each
+under the SMBIOS UUID it carries now, and writes `terraform-handover.tf`
+beside the manifest:
+
+```hcl
+removed {
+  from = proxmox_virtual_environment_vm.batch
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+Remove those machines from the Terraform configuration and put the file
+beside it. `terraform plan` must then say each "will no longer be managed by
+Terraform" and destroy nothing. A `removed` block names every instance under
+an address, so when only some instances of a `for_each` are handed over
+(`module.vms["web-1"]`), accrete prints `terraform state rm '<address>'` for
+each instead, for you to run. Until Terraform has forgotten them, both tools
+record the machines: apply neither.
+
+**From accrete to Terraform:** `accrete export --terraform -f env.yaml` writes
+`terraform-import.tf` with one `import {}` block per machine (bpg/proxmox,
+`id = "<node>/<vmid>"`). Run `terraform plan -generate-config-out=generated.tf`
+and `terraform apply`: Terraform writes the resources and imports them,
+creating nothing. Then remove the resources from the accrete manifest and run
+`accrete export --retire --terraform-state <the new state> -f env.yaml`. It
+retires accrete's record of each machine that state now records, and keeps
+(and names) any that it does not record or that the manifest still declares.
+
 ## What v0.1 does not do
 
 apply refuses these before sending anything, and exits 1:
@@ -358,8 +398,8 @@ Also not done in v0.1:
   memory. No agent enrols and nothing inside the guest is checked. Importing
   the manifest and state into Sybil re-evaluates acceptance with an agent.
 - **Adopting one machine into an existing manifest.** `accrete init
-  --from-cluster` declares and adopts what runs (see above), into a new
-  manifest.
+  --from-cluster` and `accrete import --from-terraform` declare and adopt
+  what runs (see above), into a new manifest.
 - **Providers other than Proxmox.**
 
 ## For provider authors

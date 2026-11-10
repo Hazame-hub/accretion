@@ -313,3 +313,14 @@ func ClaimKey(ref provider.Ref) string {
 	}
 	return "qemu/" + vmid
 }
+
+// TerraformImport is the bpg/proxmox resource type and import ID of the
+// machine at ref ("<node>/<vmid>", as `terraform import` takes it); ok is
+// false for a ref that is not a VM.
+func TerraformImport(ref provider.Ref) (typ, id string, ok bool) {
+	node, kind, vmid, err := splitRef(ref.ID)
+	if err != nil || kind != "qemu" {
+		return "", "", false
+	}
+	return tfVM, node + "/" + vmid, true
+}

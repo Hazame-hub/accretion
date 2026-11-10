@@ -54,6 +54,8 @@ Usage:
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
   accrete verify --terraform-state PATH (-f env.yaml | --provider TYPE --endpoint URL --token-env VAR) [...]
+  accrete import --from-terraform STATE --provider TYPE --endpoint URL --token-env VAR [...]
+  accrete export (--terraform | --retire --terraform-state PATH) -f env.yaml [...]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -84,6 +86,11 @@ verify checks a Terraform state against what the provider reports, resource
 by resource, and lists the machines the state does not record (accrete
 verify -h). GET requests only; it writes no state of either tool.
 
+import --from-terraform adopts machines Terraform owns and writes the
+removed blocks for Terraform to forget them (accrete import -h); export
+writes import blocks for Terraform to take machines over, then --retire
+drops accrete's records (accrete export -h). Neither edits a Terraform state.
+
 Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
 declined, or a machine failed or was not done, 2 accrete could not plan or
 start (bad flags, bad manifest or state, no token or a refused one, a state
@@ -96,6 +103,12 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) > 0 && args[0] == "export" {
+		return runExport(args[1:], stdout, stderr, getenv, stdin)
+	}
+	if len(args) > 0 && args[0] == "import" {
+		return runInit(ctx, args[1:], stdin, stdout, stderr, getenv)
+	}
 	if len(args) > 0 && args[0] == "init" {
 		return runInit(ctx, args[1:], stdin, stdout, stderr, getenv)
 	}

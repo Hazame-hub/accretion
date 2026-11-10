@@ -27,6 +27,7 @@ a provider already runs, so they are declared and adopted without being
 rebuilt. It sends GET requests only, then runs accrete plan on the result.
 
 Usage:
+  accrete init --from-terraform STATE --provider TYPE ... [--select REGEX]   (or: accrete import --from-terraform ...)
   accrete init --from-cluster --provider TYPE --endpoint URL (--token-env VAR | --token-file F)
                [--name ENV] [--select REGEX] [--template VMID] [--verify-tls=false]
                [--terraform-state PATH] [-f env.yaml] [--state FILE]
@@ -39,6 +40,13 @@ never guessed: --template sets it for all of them, or the manifest leaves it
 as a variable to fill in. A machine the Terraform state given with
 --terraform-state records is left out: Terraform owns it. init never
 overwrites a file.
+
+--from-terraform hands machines over from Terraform: it declares only the
+VMs the given state records (--select matches their name or Terraform
+address), adopts each under the identity it carries now, and writes
+terraform-handover.tf beside the manifest: removed blocks with
+destroy = false, so Terraform forgets them without destroying them. It
+never edits the Terraform state.
 `
 
 func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -56,11 +64,12 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	file := fs.String("f", "env.yaml", "the manifest to write")
 	statePath := fs.String("state", "", "the state to write (default: accrete.state.json beside the manifest)")
 	tfState := fs.String("terraform-state", "", "a Terraform state whose machines are left out (Terraform owns them)")
+	fromTF := fs.String("from-terraform", "", "declare only the machines this Terraform state records, and write the removed blocks that hand them over")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long the whole command may take")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if !*fromCluster || *ptype == "" || *endpoint == "" || fs.NArg() > 0 {
+	if (*fromCluster == (*fromTF != "")) || (*fromTF != "" && *tfState != "") || *ptype == "" || *endpoint == "" || fs.NArg() > 0 {
 		_, _ = fmt.Fprint(stderr, initUsage)
 		return 2
 	}
@@ -92,11 +101,21 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		sort.Strings(types)
 		return fail("accrete knows no provider of type %q; it knows %s", *ptype, strings.Join(types, ", "))
 	}
-	var owners *terraformOwners
+	var owners, handing *terraformOwners
 	if *tfState != "" {
 		var err error
 		if owners, err = loadOwners(*tfState, stdin, driver); err != nil {
 			return fail("%v", err)
+		}
+	}
+	handoverPath := filepath.Join(filepath.Dir(*file), "terraform-handover.tf")
+	if *fromTF != "" {
+		var err error
+		if handing, err = loadOwners(*fromTF, stdin, driver); err != nil {
+			return fail("--from-terraform: %v", err)
+		}
+		if _, err := os.Stat(handoverPath); err == nil {
+			return fail("%s exists; init never overwrites a file", handoverPath)
 		}
 	}
 	ref := &envmanifest.ProviderRef{Type: *ptype, Endpoint: *endpoint, VerifyTLS: *verifyTLS, TokenEnv: *tokenEnv, TokenFile: *tokenFile}
@@ -124,9 +143,13 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	var machines []provider.Declared
+	var handed []string
 	for _, d := range found {
+		addr := handing.owner(d.Ref)
 		switch {
-		case match != nil && !match.MatchString(d.Name):
+		case handing != nil && addr == "":
+			continue
+		case match != nil && !match.MatchString(d.Name) && (addr == "" || !match.MatchString(addr)):
 			continue
 		case d.Skip != "":
 			_, _ = fmt.Fprintf(stdout, "left out %s (%s): %s\n", d.Name, d.Ref.ID, d.Skip)
@@ -142,6 +165,9 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			}
 		}
 		machines = append(machines, d)
+		if addr != "" {
+			handed = append(handed, addr)
+		}
 	}
 	if len(machines) == 0 {
 		return fail("no machine to declare")
@@ -169,6 +195,17 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if err := saveState(*statePath, state); err != nil {
 		return fail("state: %v", err)
 	}
+	var stateRm []string
+	if handing != nil {
+		var tf string
+		tf, stateRm = handoverFromTerraform(handed, handing)
+		if tf != "" {
+			if err := writeNew(handoverPath, tf); err != nil {
+				return fail("%v", err)
+			}
+			_, _ = fmt.Fprintf(stdout, "wrote %s: removed blocks for Terraform to forget them without destroying them; read the steps at its top\n", handoverPath)
+		}
+	}
 	_, _ = fmt.Fprintf(stdout, "wrote %s (%d resources, %d machines) and %s\n", *file, len(env.Spec.Resources), len(machines), *statePath)
 	for _, u := range unread {
 		_, _ = fmt.Fprintf(stdout, "to do: %s\n", u)
@@ -177,6 +214,15 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		for _, n := range d.Notes {
 			_, _ = fmt.Fprintf(stdout, "note: %s: %s\n", d.Name, n)
 		}
+	}
+	if len(stateRm) > 0 {
+		_, _ = fmt.Fprintln(stdout, "A removed block names every instance under an address, and these are only some of theirs. For Terraform to forget just these, remove them from its configuration, then run Terraform's own command for each (accrete runs none):")
+		for _, c := range stateRm {
+			_, _ = fmt.Fprintf(stdout, "  %s\n", c)
+		}
+	}
+	if handing != nil {
+		_, _ = fmt.Fprintln(stdout, "Until Terraform forgets them, both tools record these machines. Do not run terraform apply or accrete apply on them before the handover is done.")
 	}
 	_, _ = fmt.Fprintln(stdout, "\nThe plan of what was written (machines that match it plan as unchanged):")
 	return run(ctx, []string{"plan", "-f", *file, "--state", *statePath}, stdin, stdout, stderr, getenv)
