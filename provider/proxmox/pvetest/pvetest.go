@@ -59,6 +59,8 @@ type Guest struct {
 	// Pending holds config changes the running guest takes at its next
 	// start: GET config shows them applied, status/current does not.
 	Pending map[string]any
+	// Pool is the resource pool the clone request put the guest in.
+	Pool string
 	// cloning counts the reads that still see the guest being cloned.
 	cloning int
 }
@@ -541,7 +543,7 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 		cfg["scsi0"] = strings.Replace(fmt.Sprint(g.Config["scsi0"]), fmt.Sprintf("base-%d-disk-0", g.VMID), fmt.Sprintf("vm-%d-disk-0", newid), 1)
 		cfg["net0"] = fmt.Sprintf("virtio=BC:24:11:00:%02X:%02X,bridge=vmbr0", newid/256, newid%256)
 		cfg["smbios1"] = "uuid=" + CloneUUID(newid)
-		s.Guests[newid] = &Guest{VMID: newid, Kind: "qemu", Status: "stopped", Config: cfg, cloning: cloningReads}
+		s.Guests[newid] = &Guest{VMID: newid, Kind: "qemu", Status: "stopped", Config: cfg, Pool: form.Get("pool"), cloning: cloningReads}
 		task()
 	case r.Method == http.MethodPost && rest == "/config":
 		for k := range form {

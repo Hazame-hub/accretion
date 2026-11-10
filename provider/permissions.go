@@ -13,6 +13,11 @@ type Grant struct {
 	Why string `json:"why"`
 	// Optional grants make plan show more; nothing fails without them.
 	Optional bool `json:"optional,omitempty"`
+	// Role is the role to grant here when it is not Permissions.Role: a
+	// narrower one, so a path outside the machines' own scope (a template
+	// outside a resource pool) gets only what is used there. Empty means
+	// Permissions.Role.
+	Role string `json:"role,omitempty"`
 	// Checked is true when the credential's own privileges on Path were
 	// read. Missing is then what it lacks there, empty when nothing.
 	Checked bool     `json:"checked"`

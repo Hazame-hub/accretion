@@ -98,6 +98,9 @@ func printPermissions(w io.Writer, envName string, machines int, offline bool, p
 		if g.Optional {
 			status += " (optional)"
 		}
+		if g.Role != "" {
+			status += " (role " + g.Role + ")"
+		}
 		_, _ = fmt.Fprintf(w, "  %s: %s\n      %s\n      %s\n", g.Path, g.Why, strings.Join(g.Privileges, " "), status)
 	}
 	switch {

@@ -57,11 +57,23 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 		if n, v, ok := strings.Cut(vmid, "/qemu/"); ok {
 			node, vmid = n, v
 		}
+		machines := machinesPath(r.Clone.Pool)
 		if !templates[tmpl{node, vmid}] {
 			templates[tmpl{node, vmid}] = true
-			b.add("/vms/"+vmid, privsTemplate, fmt.Sprintf("clone template %s", vmid), false)
+			why := fmt.Sprintf("clone template %s", vmid)
+			if r.Clone.Pool != "" {
+				// Outside the pool, the template gets a clone-only role: the
+				// machines' role there would let the token change or delete it.
+				b.addRole("/vms/"+vmid, privsTemplate, why+" (a role of its own, so the token cannot change or delete it)", role+"Clone")
+			} else {
+				b.add("/vms/"+vmid, privsTemplate, why, false)
+			}
 		}
-		b.add("/vms", privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
+		if r.Clone.Pool != "" {
+			b.add(machines, privsMachines, fmt.Sprintf("create, configure, start, stop and delete the new machines, which are cloned into pool %s", r.Clone.Pool), false)
+		} else {
+			b.add(machines, privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
+		}
 		b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's cloud-init seed ISO", false)
 		b.add("/nodes/"+node, privsNode, "read the node's capacity for the plan", false)
 		for _, nic := range r.Clone.Shape.NICs {
@@ -104,8 +116,10 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 			b.add("/storage/"+st, privsDiskStorage, why, false)
 		}
 	}
+	for _, r := range recipes {
+		b.add(machinesPath(r.Clone.Pool), privsGuestAgent, "optional: let plan show each machine's hostname and addresses from the guest agent (on Proxmox VE 8 the privilege is VM.Monitor)", true)
+	}
 	if len(recipes) > 0 {
-		b.add("/vms", privsGuestAgent, "optional: let plan show each machine's hostname and addresses from the guest agent (on Proxmox VE 8 the privilege is VM.Monitor)", true)
 		// Without it Proxmox lists the SDN as empty instead of refusing, so
 		// every plan warns that its listing is incomplete (seen on the lab
 		// 2026-11-02 with a token built from this list).
@@ -115,7 +129,7 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 	out.Grants = b.list()
 	union := map[string]bool{}
 	for _, g := range out.Grants {
-		if g.Optional {
+		if g.Optional || g.Role != "" {
 			continue
 		}
 		for _, p := range g.Privileges {
@@ -199,7 +213,12 @@ func setup(p provider.Permissions) []string {
 	var paths []string
 	seen := map[string]bool{}
 	var optional []string
+	var own []provider.Grant
 	for _, g := range p.Grants {
+		if g.Role != "" {
+			own = append(own, g)
+			continue
+		}
 		if g.Optional {
 			optional = append(optional, fmt.Sprintf("Optional: grant %s on %s (%s).", strings.Join(g.Privileges, ", "), g.Path, strings.TrimPrefix(g.Why, "optional: ")))
 			continue
@@ -230,6 +249,11 @@ func setup(p provider.Permissions) []string {
 	for _, path := range paths {
 		out = append(out, fmt.Sprintf("Proxmox UI: Datacenter → Permissions → Add → API Token Permission. Path %s, API token %s, role %s, Propagate on.", path, token, p.Role))
 	}
+	for _, g := range own {
+		out = append(out,
+			fmt.Sprintf("Proxmox UI: Datacenter → Permissions → Roles → Create. Name %s, privileges: %s.", g.Role, strings.Join(g.Privileges, ", ")),
+			fmt.Sprintf("Proxmox UI: Datacenter → Permissions → Add → API Token Permission. Path %s, API token %s, role %s, Propagate off.", g.Path, token, g.Role))
+	}
 	out = append(out,
 		"A token with Privilege Separation on gets only what both it and its user have: grant the user the same (Add → User Permission), or use a token without separation.",
 		fmt.Sprintf("Or on a node's shell: pveum role add %s --privs %q", p.Role, strings.Join(p.Privileges, ",")),
@@ -237,8 +261,22 @@ func setup(p provider.Permissions) []string {
 	for _, path := range paths {
 		out = append(out, fmt.Sprintf("  pveum acl modify %s --tokens '%s' --roles %s", path, token, p.Role))
 	}
+	for _, g := range own {
+		out = append(out,
+			fmt.Sprintf("  pveum role add %s --privs %q", g.Role, strings.Join(g.Privileges, ",")),
+			fmt.Sprintf("  pveum acl modify %s --tokens '%s' --roles %s --propagate 0", g.Path, token, g.Role))
+	}
 	out = append(out, optional...)
 	return out
+}
+
+// machinesPath is where the new machines' grants go: their resource pool,
+// whose rights reach every guest in it, or /vms when they join none.
+func machinesPath(pool string) string {
+	if pool != "" {
+		return "/pool/" + pool
+	}
+	return "/vms"
 }
 
 type grantBuilder struct {
@@ -271,6 +309,23 @@ func (b *grantBuilder) add(path string, privs []string, why string, optional boo
 		}
 		g.Why += why
 	}
+}
+
+// addRole adds a required grant of its own role at path, kept apart from the
+// grants of the main role there.
+func (b *grantBuilder) addRole(path string, privs []string, why, role string) {
+	key := "@" + role + path
+	if _, ok := b.byPath[key]; !ok {
+		b.byPath[key] = &provider.Grant{Path: path, Role: role, Why: why}
+		b.order = append(b.order, key)
+	}
+	g := b.byPath[key]
+	for _, p := range privs {
+		if !containsStr(g.Privileges, p) {
+			g.Privileges = append(g.Privileges, p)
+		}
+	}
+	sort.Strings(g.Privileges)
 }
 
 func (b *grantBuilder) list() []provider.Grant {

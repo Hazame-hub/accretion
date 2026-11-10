@@ -39,9 +39,12 @@ You need:
 - a DHCP server on the bridge.
 
 1. Create an API token. In the Proxmox UI, go to Datacenter → Permissions →
-   API Tokens. accrete puts new machines in no pool, so grant these on `/`
-   (or on `/vms`, the template, the storages, the node and the bridge, as
-   Proxmox's permission paths allow):
+   API Tokens. Unless a resource declares `pool`, accrete puts new machines in
+   no pool, so grant these on `/` (or on `/vms`, the template, the storages,
+   the node and the bridge, as Proxmox's permission paths allow). With
+   `pool: <name>`, the machines' privileges go on `/pool/<name>` instead, and
+   the template gets a clone-only role (`VM.Audit`, `VM.Clone`), so the token
+   can neither touch guests outside the pool nor change the template:
    - on the machines (`/vms`): `VM.Allocate`, `VM.Clone`, `VM.Audit`,
      `VM.PowerMgmt`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`,
      `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM`,
@@ -226,6 +229,7 @@ instances would be identical is refused.
 | `disk_gb` | 0 | Grows the boot disk to at least this. 0 keeps the template's. |
 | `cpu` | `x86-64-v2-AES` | A CPU model name. |
 | `net0` | `virtio,bridge=vmbr0` | The one network card, for example `virtio,bridge=vmbr0,tag=30`. |
+| `pool` | none | A resource pool the clone is created in. Grant the token's machine privileges on `/pool/<name>` to confine it there; `accrete permissions` prints the grants. Set at creation only. |
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
 | `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
 
