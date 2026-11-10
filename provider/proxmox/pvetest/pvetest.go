@@ -578,7 +578,15 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				continue
 			}
 			delete(g.Pending, k)
-			g.Config[k] = form.Get(k)
+			v := form.Get(k)
+			// As Proxmox does: a card set without a MAC is given one.
+			if strings.HasPrefix(k, "net") {
+				if model, rest, _ := strings.Cut(v, ","); !strings.Contains(model, "=") {
+					n, _ := strconv.Atoi(k[3:])
+					v = fmt.Sprintf("%s=BC:24:11:%02X:%02X:%02X,%s", model, n+1, g.VMID/256, g.VMID%256, rest)
+				}
+			}
+			g.Config[k] = v
 		}
 		data(nil)
 	case r.Method == http.MethodPut && rest == "/resize":
