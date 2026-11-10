@@ -72,6 +72,11 @@ type Guest struct {
 	// AgentHostname, when set, is what the guest agent of a running guest
 	// answers, installed or not.
 	AgentHostname string
+	// FromImage is the disk image the guest's disk was copied from, "" for
+	// none. Such a guest has no guest agent (Fedora CoreOS ships none); its
+	// first start with a seed whose config ends the first boot with a
+	// power-off runs a simulated first boot, and Installed marks it done.
+	FromImage string
 }
 
 // applyPending is a start: the guest takes its pending config.
@@ -124,6 +129,12 @@ type Server struct {
 	// GET /access/permissions?path= answers it. Nil keeps the default answer
 	// (SDN.Audit on /sdn).
 	Privileges map[string][]string
+	// ImageGiB is the virtual size of a disk copied from an image, by
+	// volid; 10 when unset.
+	ImageGiB map[string]int
+	// BrokenFirstBoot makes every simulated first boot hang instead of
+	// powering off, as a machine whose Ignition config failed does.
+	BrokenFirstBoot bool
 	// InstallReads is how many status reads a simulated install runs for
 	// before it powers the guest off: started with an empty disk, an ISO on
 	// ide2 and an OEMDRV disc holding ks.cfg on ide3, a guest installs the
@@ -401,6 +412,21 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 				cfg[k] = n
 			}
 		}
+		// A disk "storage:0,import-from=volid" is a copy of an image.
+		fromImage := ""
+		if line, ok := cfg["scsi0"].(string); ok && strings.Contains(line, ",import-from=") {
+			st, rest, _ := strings.Cut(line, ":")
+			fromImage = strings.TrimPrefix(rest[strings.Index(rest, ",import-from="):], ",import-from=")
+			if _, ok := s.Files[fromImage]; !ok || !strings.HasPrefix(rest, "0,") {
+				fail(http.StatusInternalServerError, fmt.Sprintf("unable to create VM %d - import-from: volume '%s' does not exist", id, fromImage))
+				return
+			}
+			gb := s.ImageGiB[fromImage]
+			if gb == 0 {
+				gb = 10
+			}
+			cfg["scsi0"] = fmt.Sprintf("%s:vm-%d-disk-0,size=%dG", st, id, gb)
+		}
 		// A new disk "storage:size" is allocated as Proxmox names it.
 		if line, ok := cfg["scsi0"].(string); ok {
 			if st, size, ok := strings.Cut(line, ":"); ok && !strings.Contains(size, "/") && !strings.Contains(size, "disk") {
@@ -411,7 +437,7 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			model, rest, _ := strings.Cut(line, ",")
 			cfg["net0"] = fmt.Sprintf("%s=BC:24:11:01:%02X:%02X,%s", model, id/256, id%256, rest)
 		}
-		s.Guests[id] = &Guest{VMID: id, Kind: "qemu", Status: "stopped", Config: cfg}
+		s.Guests[id] = &Guest{VMID: id, Kind: "qemu", Status: "stopped", Config: cfg, FromImage: fromImage}
 		task()
 	case r.Method == http.MethodGet && (p == "/nodes/pve1/qemu" || p == "/nodes/pve1/lxc"):
 		kind := strings.TrimPrefix(p, "/nodes/pve1/")
@@ -514,8 +540,12 @@ func (s *Server) storage(method string, m []string, form url.Values, data func(a
 		}
 		sort.Strings(names)
 		for _, v := range names {
+			content := "iso"
+			if strings.HasPrefix(v, store+":import/") {
+				content = "import"
+			}
 			if strings.HasPrefix(v, store+":") {
-				rows = append(rows, map[string]any{"volid": v, "content": "iso", "size": len(s.Files[v]), "ctime": FileCTime})
+				rows = append(rows, map[string]any{"volid": v, "content": content, "size": len(s.Files[v]), "ctime": FileCTime})
 			}
 		}
 		data(rows)
@@ -695,6 +725,23 @@ func (s *Server) startInstall(g *Guest) {
 		line, _ := g.Config[key].(string)
 		v, _, _ := strings.Cut(line, ",")
 		return v
+	}
+	if g.FromImage != "" {
+		// A first boot: its seed on ide2 asks for a power-off at its end,
+		// in cloud-config or in an Ignition config.
+		seed := s.Files[vol("ide2")]
+		if !bytes.Contains(seed, []byte("accrete-first-boot.service")) && !bytes.Contains(seed, []byte("power_state:")) {
+			return
+		}
+		switch {
+		case s.BrokenFirstBoot || s.InstallReads < 0:
+			g.installing = -1
+		case s.InstallReads == 0:
+			g.installing = 2
+		default:
+			g.installing = s.InstallReads
+		}
+		return
 	}
 	iso, answer := vol("ide2"), s.Files[vol("ide3")]
 	if _, ok := s.Files[iso]; !ok || !bytes.Contains(answer, []byte("OEMDRV")) {

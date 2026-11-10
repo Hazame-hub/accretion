@@ -1,0 +1,45 @@
+# A Fedora CoreOS VM on Proxmox, built from its proxmoxve image with an
+# Ignition config accrete renders from the bootstrap below:
+#
+#   ACCRETE_PROXMOX_TOKEN='user@realm!tokenid=secret' \
+#     go run ./cmd/accrete apply -f examples/fedora-coreos.yaml
+#
+# Before the first apply, put the image on a storage's Import content
+# (Proxmox VE 8.2 or later): Datacenter → Storage → local → Edit → Content:
+# add Import; then local → Import → Download from URL (or Upload) with the
+# proxmoxve qcow2 from https://fedoraproject.org/coreos/download (stream
+# stable, platform Proxmox VE). It is published as .qcow2.xz: decompress it
+# first if the dialog cannot.
+apiVersion: accretion/v1alpha1
+kind: Environment
+metadata:
+  name: fcos
+spec:
+  provider:
+    type: proxmox
+    endpoint: https://pve.example.invalid:8006
+    verify_tls: false
+    token_env: ACCRETE_PROXMOX_TOKEN
+  resources:
+    - name: fcos
+      count: 1
+      blueprint: image-proxmox-vm
+      inputs:
+        pve_node: pve
+        hostname: fcos-{{instance.number}}
+        image: local:import/fedora-coreos-44.20261023.3.1-proxmoxve.x86_64.qcow2
+        seed_format: ignition
+        disk_gb: 20
+        cores: 2
+        memory_mb: 4096
+        net0: virtio,bridge=vmbr0
+        bootstrap:
+          users:
+            # core is Fedora CoreOS's own admin; give it your key.
+            - name: core
+              ssh_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbm9wZW5zc2gta2V5LXYxAAAAAA you@laptop"]
+              sudo: true
+          timezone: Europe/Rome
+          files:
+            - path: /etc/motd.d/accrete
+              content: "Built by accrete from the Fedora CoreOS proxmoxve image.\n"

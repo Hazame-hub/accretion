@@ -28,9 +28,10 @@ const AnswerFormatKickstart = "kickstart"
 const DefaultInstallTimeout = 60 * time.Minute
 
 // AccreteBlueprints is the blueprints accrete plans and builds with: the ones
-// Sybil ships, and InstallBlueprints. Each call returns a fresh copy.
+// Sybil ships, InstallBlueprints and ImageBlueprints. Each call returns a
+// fresh copy.
 func AccreteBlueprints() []plan.Blueprint {
-	return append(Blueprints(), InstallBlueprints()...)
+	return append(append(Blueprints(), InstallBlueprints()...), ImageBlueprints()...)
 }
 
 // InstallBlueprints is accrete's own blueprints, which Sybil does not run.

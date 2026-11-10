@@ -14,12 +14,13 @@ import (
 //
 // The installer image is never the machine's own: no verb removes it.
 type Installer interface {
-	// Media reads an installer image the provider keeps, refusing one it
-	// does not list.
+	// Media reads an installer or disk image the provider keeps, refusing
+	// one it does not list.
 	Media(ctx context.Context, placement, volume string) (Media, error)
-	// Create makes an empty machine, born with its identity, its owner mark,
-	// its shape, an empty boot disk and the installer image in a CD drive,
-	// booting from the disk first and the installer when the disk is empty.
+	// Create makes a machine, born with its identity, its owner mark and its
+	// shape. With an Installer: an empty boot disk and the installer image in
+	// a CD drive, booting from the disk first and the installer when the
+	// disk is empty. With an Image: a boot disk copied from the image.
 	// Like Clone, an empty ID finds the machine an earlier call made.
 	Create(ctx context.Context, req CreateRequest) (Machine, error)
 	// PlaceAnswer puts the answer disc in the machine's second CD drive.
@@ -57,8 +58,14 @@ type CreateRequest struct {
 	Shape     Shape
 	// DiskStorage is where the empty boot disk of Shape.DiskGB is made.
 	DiskStorage string
-	// Installer is the installer image's volume.
+	// Installer is the installer image's volume, booted from a CD drive.
+	// Exactly one of Installer and Image is set.
 	Installer string
+	// Image is a disk image's volume (a cloud image such as Fedora CoreOS's
+	// proxmoxve qcow2): the boot disk is a copy of it, grown to Shape.DiskGB
+	// when that is larger, and no installer runs. The image itself stays
+	// where it is.
+	Image string
 }
 
 // Answer is an installer's answer disc: files at its root under a label the

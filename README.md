@@ -132,7 +132,9 @@ apply and destroy): how long the whole command may run.
 - **create:** clone the template, seed cloud-init, start the machine, confirm it, record it. For
   `install-proxmox-vm`: create an empty machine, give it its answer disc, start the installer,
   wait for its power-off, remove the discs, start it from its disk, accept it on its agent's
-  hostname, record it (see below).
+  hostname, record it (see below). For `image-proxmox-vm`: create the machine with its disk
+  copied from a disk image, seed it, start it, wait for its first boot to power it off, start
+  it again, confirm it, record it (see below).
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **change** of cores, memory or disk size (the manifest changed, or the
@@ -295,6 +297,85 @@ clone, `VM.GuestAgent.Audit` on `/vms` is required (on Proxmox VE 8,
 Sybil does not run this blueprint yet: a manifest that uses it is refused there
 by name ("not one this connector offers").
 
+### Build from a disk image, any OS: `image-proxmox-vm`
+
+Most operating systems publish a cloud image: a disk that boots straight
+into the installed system and reads its first-boot config from a small disc
+labelled `cidata`. accrete builds a machine from such an image with no
+template made by hand and no installer: the VM's disk is a copy of the image,
+grown to `disk_gb`, and its seed disc holds the config rendered from the
+manifest, in one of two formats:
+
+- `seed_format: ignition` for **Fedora CoreOS** (its `proxmoxve` image reads
+  an Ignition config from the `cidata` disc) and other Ignition systems;
+- `seed_format: cloud-init` (the default) for Debian, Ubuntu, Rocky, Alma,
+  Fedora Cloud and other cloud-init images.
+
+```yaml
+    - name: fcos
+      blueprint: image-proxmox-vm
+      inputs:
+        pve_node: pve
+        hostname: fcos-{{instance.number}}
+        image: local:import/fedora-coreos-44.20261023.3.1-proxmoxve.x86_64.qcow2
+        seed_format: ignition
+        disk_gb: 20
+        memory_mb: 4096
+        bootstrap:
+          users:
+            - name: core
+              ssh_keys: ["ssh-ed25519 AAAA… ops@laptop"]
+              sudo: true
+```
+
+**Getting the image onto Proxmox (VE 8.2 or later):** enable the `Import`
+content on a storage (Datacenter → Storage → `local` → Edit → Content), then
+on that storage's **Import** tab use *Download from URL* or *Upload*. Fedora
+CoreOS publishes its `proxmoxve` image as `qcow2.xz`: decompress it first if
+the dialog cannot (`xz -d`, or 7-Zip on Windows). See
+`examples/fedora-coreos.yaml`.
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node` | `pve` | |
+| `hostname` | (required) | The VM's name and the hostname its seed sets. |
+| `image` | (required) | `storage:import/name.qcow2` (or `.raw`, `.vmdk`). accrete never removes it. |
+| `image_sha256` | none | Recorded as declared. accrete cannot hash a file on the node's storage, so it never says it checked it. |
+| `seed_format` | `cloud-init` | `cloud-init` or `ignition`. |
+| `first_boot_timeout_minutes` | 15 | How long one apply waits for the first boot to power the machine off. |
+| `seed_storage` | `local` | Takes ISO content; holds the machine's seed disc. |
+| `disk_storage` | `local-lvm` | Where the copy of the image is made. |
+| `disk_gb` | 0 | The boot disk is grown to this; 0 keeps the image's size. Grows only. |
+| `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | DHCP on the one card. A serial port is added: these images log their console there too. |
+| `bootstrap` | none | `users`, `timezone`, `files` in both formats; `packages` and `run` with cloud-init only. With Ignition, packages are refused (an image-based OS installs none at first boot: run the software as a container, or layer it later with rpm-ostree), so are `run` (write a systemd unit with `files`) and files under `/usr` (read-only). Any `{{secret.…}}` is refused: the disc is readable from storage. |
+
+**The steps, each saved before the next:** create, guest-init,
+start-first-boot, first-boot, boot, confirm. A killed accrete is resumed by
+the next apply on the same machine.
+
+**Accepted on the guest's own sign, not on "it runs".** The seed ends the
+first boot with a power-off once its config has been applied: cloud-init's
+`power_state` at the end of its final stage, or, for Ignition, a one-shot
+unit (`accrete-first-boot.service`) that runs once the boot reached
+`multi-user.target`. A machine whose Ignition config failed stops in its
+emergency shell and never powers off, so it is not accepted: apply exits 1,
+the record stays `unknown` and the machine is kept. Once powered off, the
+machine is started again and accepted if it runs with its minted SMBIOS UUID
+and the declared cores and memory. Fedora CoreOS ships no guest agent, so
+nothing more is read from inside it; when an image has one, its hostname must
+be the declared one.
+
+**What is recorded:** the image's volume, size and date as Proxmox lists them,
+the seed's format and SHA-256, and any declared image hash marked as declared
+(`images` in the state).
+
+**Permissions:** no template and no guest agent. `Datastore.Audit` on the
+image's storage (to find and copy it), the disk storage, the seed storage,
+`/vms` (including `VM.Config.HWType` for the serial port). `accrete
+permissions` lists them.
+
+Sybil does not run this blueprint yet.
+
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
 
@@ -349,8 +430,8 @@ apply refuses these before sending anything, and exits 1:
   card. `ip_address*`, `gateway`, `nameservers` and `net1`..`net3` are refused.
 - **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
   accrete has no secret store.
-- **Other blueprints.** Only `provision-proxmox-vm` and `install-proxmox-vm`
-  are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
+- **Other blueprints.** Only `provision-proxmox-vm`, `install-proxmox-vm`
+  and `image-proxmox-vm` are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
   the template-building blueprint are refused by name.
 
 Also not done in v0.1:
