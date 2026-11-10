@@ -172,6 +172,11 @@ func TestPermissionsWithAPoolGrantOnThePoolAndACloneOnlyRoleOnTheTemplate(t *tes
 		"pveum role add accrete-labClone --privs \"VM.Audit,VM.Clone\"",
 		"pveum acl modify /vms/9000 --tokens '<user@realm!tokenid>' --roles accrete-labClone --propagate 0",
 		"(role accrete-labClone)",
+		"pveum role add accrete-labDisk --privs \"Datastore.AllocateSpace,Datastore.Audit\"",
+		"pveum acl modify /storage/local-lvm --tokens '<user@realm!tokenid>' --roles accrete-labDisk",
+		"pveum role add accrete-labSeed --privs \"Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit\"",
+		"pveum acl modify /nodes/pve1 --tokens '<user@realm!tokenid>' --roles accrete-labNode",
+		"pveum acl modify /sdn/zones/localnetwork/vmbr0 --tokens '<user@realm!tokenid>' --roles accrete-labNet",
 		"Optional: grant VM.GuestAgent.Audit on /pool/sybil-lab",
 		"The token has every privilege an apply needs.",
 	} {
@@ -184,10 +189,15 @@ func TestPermissionsWithAPoolGrantOnThePoolAndACloneOnlyRoleOnTheTemplate(t *tes
 			t.Errorf("a pool-scoped manifest still asks for %q:\n%s", bad, out)
 		}
 	}
-	// The main role must not carry the clone-only grant's scope: it is the
-	// machines' privileges, and the template's role is only what is used.
-	if !strings.Contains(out, "pveum role add accrete-lab --privs") {
-		t.Errorf("no main role:\n%s", out)
+	// The main role holds the machines' privileges only: no storage
+	// privilege, or the token could delete any volume on the disk storage.
+	if !strings.Contains(out, "pveum role add accrete-lab --privs \"VM.Allocate,") || strings.Contains(out, "accrete-lab --privs \"Datastore") {
+		t.Errorf("main role:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "pveum role add accrete-lab --privs") && strings.Contains(line, "Datastore") {
+			t.Errorf("main role carries a storage privilege: %s", line)
+		}
 	}
 	l.onlyGETs()
 }
