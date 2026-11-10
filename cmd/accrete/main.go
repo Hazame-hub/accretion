@@ -52,6 +52,8 @@ Usage:
   accrete destroy -f env.yaml [--state FILE] [--auto-approve] [--forget-gone]
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
+  accrete bundle -f install.yaml [-o DIR]
+  accrete pxe    -f install.yaml [-o DIR]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -73,6 +75,11 @@ paths to grant it on and how, and checks what the token has there now
 init --from-cluster writes a manifest and a state for the machines the
 provider already runs, then plans them (accrete init -h).
 
+bundle and pxe read a NetworkInstall file, not an Environment manifest, and
+contact nothing. bundle writes one kickstart for many machines, each picking
+its own profile by UUID, serial or MAC. pxe writes an iPXE gate, that
+kickstart and a proxy-DHCP config for network installs (accrete pxe -h).
+
 Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
 declined, or a machine failed or was not done, 2 accrete could not plan or
 start (bad flags, bad manifest or state, no token or a refused one, a state
@@ -87,6 +94,12 @@ func main() {
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if len(args) > 0 && args[0] == "init" {
 		return runInit(ctx, args[1:], stdin, stdout, stderr, getenv)
+	}
+	if len(args) > 0 && args[0] == "bundle" {
+		return runBundle(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "pxe" {
+		return runPXE(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy" && args[0] != "permissions") {
 		fmt.Fprint(stderr, usage)
