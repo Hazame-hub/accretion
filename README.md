@@ -43,8 +43,11 @@ You need:
    no pool, so grant these on `/` (or on `/vms`, the template, the storages,
    the node and the bridge, as Proxmox's permission paths allow). With
    `pool: <name>`, the machines' privileges go on `/pool/<name>` instead, and
-   the template gets a clone-only role (`VM.Audit`, `VM.Clone`), so the token
-   can neither touch guests outside the pool nor change the template:
+   every other path gets a role of its own holding only what is used there
+   (the template only `VM.Audit` and `VM.Clone`, the disk storage only
+   `Datastore.AllocateSpace` and `Datastore.Audit`), so the token can neither
+   touch guests outside the pool, change the template, nor delete volumes it
+   did not make. `accrete permissions` prints these roles:
    - on the machines (`/vms`): `VM.Allocate`, `VM.Clone`, `VM.Audit`,
      `VM.PowerMgmt`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`,
      `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM`,
