@@ -93,7 +93,7 @@ func TestApplyBootsAnInstallerThatNeedsNoAnswerFile(t *testing.T) {
 			t.Errorf("accrete left %s on storage", volid)
 		}
 	}
-	if c := l.plan().Plan.Counts(); c[plan.ActionNoOp] != 3 {
+	if c := l.plan().Counts(); c[plan.ActionNoOp] != 3 {
 		t.Errorf("plan after apply: %v", c)
 	}
 	if out, code := l.accrete("", "destroy", "--auto-approve"); code != 0 || len(current(l.loadState())) != 0 {

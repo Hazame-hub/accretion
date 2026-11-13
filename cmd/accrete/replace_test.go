@@ -52,7 +52,7 @@ func TestReplaceDeletesAMachineAndBuildsItAgain(t *testing.T) {
 	if n := len(current(l.loadState())); n != 2 {
 		t.Errorf("%d machines recorded, want 2", n)
 	}
-	if c := l.plan().Plan.Counts(); c["no-op"] != 2 {
+	if c := l.plan().Counts(); c["no-op"] != 2 {
 		t.Errorf("plan after the replace: %v", c)
 	}
 }
@@ -73,7 +73,7 @@ func TestReplaceRebuildsAMachineThatWasRemovedByHand(t *testing.T) {
 	if ids := l.pve.Named("accrete-web-1"); len(ids) != 1 {
 		t.Errorf("guests named accrete-web-1: %v", ids)
 	}
-	if c := l.plan().Plan.Counts(); c["no-op"] != 2 {
+	if c := l.plan().Counts(); c["no-op"] != 2 {
 		t.Errorf("plan after the rebuild: %v", c)
 	}
 }
@@ -142,7 +142,7 @@ func TestReplaceIsHowAChangeThatCannotBeMadeInPlaceIsApplied(t *testing.T) {
 	if code != 0 || strings.Count(out, "deleted; record retired") != 2 {
 		t.Fatalf("apply --replace: exit %d\n%s", code, out)
 	}
-	if c := l.plan().Plan.Counts(); c["no-op"] != 2 {
+	if c := l.plan().Counts(); c["no-op"] != 2 {
 		t.Errorf("plan after the replace: %v", c)
 	}
 }

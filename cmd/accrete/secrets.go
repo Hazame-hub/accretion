@@ -48,9 +48,6 @@ func secretEnv(name string) string {
 // filler rewrites one string of a profile.
 type filler func(string) (string, error)
 
-// asIs leaves every string alone: a profile with no secret.
-func asIs(s string) (string, error) { return s, nil }
-
 // withSecrets puts each secret's value in, or fails naming the variables
 // that are not set.
 func withSecrets(getenv func(string) string) filler {
