@@ -70,7 +70,9 @@ type ImageRecipe struct {
 type InstallRecipe struct {
 	// Create is the request without its per-machine guards, as Clone is.
 	Create CreateRequest
-	// AnswerFormat is the answer file's format; "kickstart" is the only one.
+	// AnswerFormat is the answer file's format: "kickstart", or "" for an
+	// installer that carries its own answers (an OKD agent ISO, say), which
+	// gets no answer disc and is accepted on the hypervisor's evidence only.
 	AnswerFormat string
 	// Disk is the guest's name for the disk Create makes, the only one the
 	// answer file may partition.

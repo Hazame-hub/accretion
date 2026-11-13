@@ -731,3 +731,24 @@ func (s *session) Delete(ctx context.Context, m provider.Target, opts provider.D
 	}
 	return out, nil
 }
+
+// RemoveSeed implements provider.SeedRemover: the seed is ejected from the
+// machine that still carries its minted identity, then deleted from its
+// storage. A seed already gone is done.
+func (s *session) RemoveSeed(ctx context.Context, m provider.Target, pl provider.Placement) error {
+	_, vmid, _, absent, err := s.guard(ctx, m)
+	if err != nil {
+		return err
+	}
+	if absent {
+		return provider.Refused("proxmox: nothing at %s", m.Ref.ID)
+	}
+	storage, file, ok := strings.Cut(pl.Volume, ":iso/")
+	if !ok || storage != pl.Storage || pl.Node == "" {
+		return provider.Refused("proxmox: %q is not a seed placement accrete made", pl.Volume)
+	}
+	if _, _, err := s.c.RemoveSeed(ctx, map[string]interface{}{"node": pl.Node, "storage": storage, "filename": file, "vmid": vmid}); err != nil {
+		return unknownAfter("proxmox: remove seed "+file, err)
+	}
+	return nil
+}

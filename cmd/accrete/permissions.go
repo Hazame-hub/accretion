@@ -62,7 +62,16 @@ func permissions(ctx context.Context, env envmanifest.Environment, driver all.Dr
 		defer func() { _ = s.Close() }()
 		session = s
 	}
-	p := driver.Permissions(ctx, session, role, recipes)
+	// Every declared network: permissions reads no plan, and apply creates
+	// whichever of them the cluster lacks.
+	var networks []provider.NetworkSpec
+	for _, n := range env.Spec.Networks {
+		networks = append(networks, provider.NetworkSpec{Zone: n.Zone, Name: n.Name, Subnet: n.Subnet, Gateway: n.Gateway, SNAT: n.SNAT, DHCPRange: n.DHCPRange})
+	}
+	if len(networks) > 0 {
+		notes = append(notes, "the network grants (SDN.Allocate on /sdn, Sys.Modify on /nodes) are only used while a declared network has to be created; remove them once every network exists")
+	}
+	p := driver.Permissions(ctx, session, role, recipes, networks)
 	p.Notes = append(notes, p.Notes...)
 
 	if output == "json" {

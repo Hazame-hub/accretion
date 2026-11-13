@@ -81,6 +81,20 @@ type Guest struct {
 	FromImage string
 }
 
+// asSent is a config value as Proxmox stores and returns it: cores, sockets
+// and memory are numbers in its JSON, however the form sent them. Kept as
+// strings, the guest listing's cpus would be a string, which no client of
+// the real API has to decode.
+func asSent(key, v string) any {
+	switch key {
+	case "cores", "sockets", "memory":
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return v
+}
+
 // applyPending is a start: the guest takes its pending config.
 func (g *Guest) applyPending() {
 	for k, v := range g.Pending {
@@ -152,6 +166,19 @@ type Server struct {
 	// Vnets are the cluster's applied SDN vnets, by name, each with its
 	// zone, as GET /cluster/sdn/vnets lists them.
 	Vnets map[string]string
+	// Zones and Networks are the SDN the network writes made (sdn.go);
+	// Vnets are listed beside them as applied and up.
+	Zones    map[string]*Zone
+	Networks map[string]*Vnet
+	// NodeNetworkChanges is pve1's staged network diff, as GET
+	// /nodes/pve1/network reports it beside the interfaces.
+	NodeNetworkChanges string
+	// BridgeNeverUp keeps every vnet's bridge down after a node reload, as
+	// a zone with DHCP does on a node without dnsmasq.
+	BridgeNeverUp bool
+	// OnUpload, when set, sees every file uploaded to a storage, as it was
+	// uploaded: what a later removal leaves no trace of.
+	OnUpload func(volid string, body []byte)
 }
 
 // Task is one entry of the task log.
@@ -520,19 +547,7 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			have[priv] = 1
 		}
 		data(map[string]any{path: have})
-	case r.Method == http.MethodGet && p == "/cluster/sdn/vnets":
-		rows := []map[string]any{}
-		names := make([]string, 0, len(s.Vnets))
-		for n := range s.Vnets {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			rows = append(rows, map[string]any{"vnet": n, "zone": s.Vnets[n], "type": "vnet"})
-		}
-		data(rows)
-	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
-		data([]any{})
+	case s.sdn(w, r.Method, p, form, data, fail, task):
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":
 		localContent := "iso,vztmpl,import"
 		if s.NoImportContent {
@@ -585,6 +600,9 @@ func (s *Server) storage(method string, m []string, form url.Values, data func(a
 			return
 		}
 		s.Files[store+":"+content+"/"+name] = []byte(form.Get("(body)"))
+		if s.OnUpload != nil {
+			s.OnUpload(store+":"+content+"/"+name, []byte(form.Get("(body)")))
+		}
 		task()
 	case method == http.MethodDelete && what == "content":
 		vol, _ := url.PathUnescape(rest)
@@ -685,7 +703,7 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				if g.Pending == nil {
 					g.Pending = map[string]any{}
 				}
-				g.Pending[k] = form.Get(k)
+				g.Pending[k] = asSent(k, form.Get(k))
 				if fmt.Sprint(g.Config[k]) == form.Get(k) {
 					delete(g.Pending, k)
 				}
@@ -700,7 +718,7 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 					v = fmt.Sprintf("%s=BC:24:11:%02X:%02X:%02X,%s", model, n+1, g.VMID/256, g.VMID%256, rest)
 				}
 			}
-			g.Config[k] = v
+			g.Config[k] = asSent(k, v)
 		}
 		data(nil)
 	case r.Method == http.MethodPut && rest == "/resize":
@@ -763,10 +781,10 @@ func (s *Server) startInstall(g *Guest) {
 		v, _, _ := strings.Cut(line, ",")
 		return v
 	}
-	if g.FromImage != "" {
+	if seed := s.Files[vol("ide2")]; g.FromImage != "" || bytes.Contains(seed, []byte("power_state:")) {
 		// A first boot: its seed on ide2 asks for a power-off at its end,
-		// in cloud-config or in an Ignition config.
-		seed := s.Files[vol("ide2")]
+		// in cloud-config or in an Ignition config (a disk image's build,
+		// or a clone whose seed carries secrets).
 		if !bytes.Contains(seed, []byte("accrete-first-boot.service")) && !bytes.Contains(seed, []byte("power_state:")) {
 			return
 		}

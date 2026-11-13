@@ -58,7 +58,12 @@ You need:
      `Datastore.AllocateTemplate` (to upload the seed ISO) and
      `Datastore.Allocate` (to remove it);
    - on the node: `Sys.Audit`;
-   - on the bridge (Proxmox VE 8 and 9): `SDN.Use`.
+   - on the bridge (Proxmox VE 8 and 9): `SDN.Use`, on
+     `/sdn/zones/localnetwork/<bridge>`, or on `/sdn/zones/<zone>/<network>`
+     for a network the manifest declares;
+   - only while a declared network has to be created: `SDN.Allocate` and
+     `SDN.Audit` on `/sdn`, and `Sys.Modify` on the nodes (to reload their
+     network so the bridge comes up).
 
    Optional: `VM.GuestAgent.Audit` (Proxmox VE 9) or `VM.Monitor` (VE 8) on
    the machines lets `plan` show the guest agent's hostname and addresses;
@@ -125,8 +130,8 @@ It holds no endpoint and no credential.
 
 | Command | What it does |
 | --- | --- |
-| `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
-| `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
+| `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. `--detailed-exitcode` exits 0 when every line is unchanged, 3 when one would create, change or delete, and 4 when one is unknown, so a scheduled run can tell drift from no drift. |
+| `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone] [--replace RES/N]` | Prints the plan, asks, then acts on it one machine at a time. `--replace web/0` (repeatable, or comma-separated) deletes that declared machine and builds it again. |
 | `accrete destroy -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
 | `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
@@ -151,6 +156,17 @@ apply and destroy): how long the whole command may run.
   names each card by the MAC Proxmox gave it at clone time, so each card gets
   its own addressing whatever the guest calls its interfaces. Two machines
   declared with the same fixed address are a plan error.
+- **create** of a network (`spec.networks`, a network the cluster lacks):
+  define what is missing of its simple zone (with the PVE IPAM, and dnsmasq
+  DHCP when the network has a range), its vnet and its subnet; apply the
+  cluster's SDN; reload each online node's network; wait until the vnet is up
+  on every node. Networks come first. A machine on a network created in the
+  same apply is created after it (`create web/0 (on web, once created)`), and
+  is not started when its network failed. A rerun finishes a half-made
+  network. Refused before anything is sent: a zone that exists as another
+  type or with the other DHCP setting (DHCP is a zone setting), SDN edits
+  somebody else left unapplied (the cluster apply would publish them), and a
+  node with network edits staged (its reload would apply them).
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **change** of cores, memory or disk size (the manifest changed, or the
@@ -159,16 +175,29 @@ apply and destroy): how long the whole command may run.
   (on Proxmox, cores or memory without hotplug), confirm what it runs with,
   then record it. The disk only grows; a shrink is refused at plan time. A
   stopped machine is not changed: start it first.
-- **any other change:** not done. It is reported and the exit status is 1.
+- **any other change** (template, image, installer, network, hostname,
+  bootstrap): not done without `--replace`. It is reported and the exit
+  status is 1.
+- **`--replace web/0`:** the named declared machine is deleted (stopped,
+  deleted, its seed removed, its record retired) and built again from the
+  manifest, under a new identity, in the same run. Only a machine accrete can
+  prove it built is deleted: its minted UUID is checked first, and one built
+  through another connector or without a recorded identity is refused. One
+  the provider lists nothing for is rebuilt only when the listing was
+  complete (that is how a machine removed by hand comes back); a machine the
+  evidence cannot place, or one half-built by an earlier apply, is refused.
+  A name the manifest does not declare is refused. If the create fails after
+  the delete, the next apply plans that machine as a create.
 - **unknown:** a machine an earlier apply left half-built is finished (or,
   if the manifest no longer declares it, removed). A machine the manifest no
   longer declares (or that destroy is removing) and that the provider does
   not list any more keeps its record unless `--forget-gone` (see below). Any
   other unknown line is never touched, is reported as not done, and the exit
-  status is 1. That includes a declared machine removed by hand: v0.1
-  neither rebuilds it nor forgets it.
+  status is 1. That includes a declared machine removed by hand: apply
+  rebuilds it only with `--replace`.
 
-**Exit status:**
+**Exit status** (of plan, apply and destroy; plan with `--detailed-exitcode`
+also uses 3 and 4, see Commands):
 - **0:** done, or nothing to do.
 - **1:** the plan has errors, you declined, or a machine failed or was not done.
 - **2:** accrete could not plan or start. That covers bad flags, a bad manifest
@@ -289,7 +318,7 @@ supported installer.
 | `disk_storage` | `local-lvm` | Where the empty disk is made. |
 | `disk_gb` | 32 | The only disk the kickstart partitions. |
 | `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | memory_mb is at least 1536. DHCP on the one card. |
-| `bootstrap` | none | `users`, `packages`, `timezone`, `files`. `run` is refused (its commands would run in the installer, not on the booted machine), and so is any `{{secret.…}}` (the disc is readable from storage). |
+| `bootstrap` | none | `users`, `packages`, `timezone`, `files`. `run` is refused (its commands would run in the installer, not on the booted machine). A `{{secret.…}}` is allowed (see Secrets): the answer disc is deleted once the install is done. |
 
 The kickstart is fixed on purpose: text mode, DHCP, root locked, only the new
 disk partitioned, the minimal environment plus `qemu-guest-agent`, and
@@ -317,6 +346,42 @@ clone, `VM.GuestAgent.Audit` on `/vms` is required (on Proxmox VE 8,
 
 Sybil does not run this blueprint yet: a manifest that uses it is refused there
 by name ("not one this connector offers").
+
+### Boot an installer that brings its own answers: `provision-proxmox-iso-vm`
+
+Some installers need no answer file from accrete: an OKD or OpenShift agent
+ISO carries its install-config and agent-config inside, and a live ISO may
+need none. This is Sybil's own blueprint, and accrete builds it the way Sybil
+does: an empty VM of the declared size, the ISO on `ide2`, boot order disk
+first then the ISO (the empty disk falls through to the installer, and once
+installed the disk boots), started, and accepted on the hypervisor's
+evidence only: listed with its minted SMBIOS UUID, running, with the declared
+cores and memory.
+
+```yaml
+    - name: master
+      count: 3
+      blueprint: provision-proxmox-iso-vm
+      inputs:
+        pve_node: pve
+        hostname: okd-master-{{instance.number}}
+        iso: local:iso/agent.x86_64.iso
+        disk_gb: 120
+        cores: 4
+        memory_mb: 16384
+        net0: virtio=52:54:00:aa:bb:0{{instance.number}},bridge=vmbr0
+```
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node`, `hostname`, `iso` | `pve`, (required), (required) | `hostname` is the VM's name in Proxmox; the installer decides the guest's own. |
+| `disk_storage`, `disk_gb` | `local-lvm`, 120 | The empty install disk. |
+| `cores`, `memory_mb`, `cpu`, `net0` | 4, 16384, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | Pin the MAC in `net0` when the installer names hosts by MAC (an agent-config does). |
+| `on_enrolment_failure` | `destroy` | Only the default is taken. accrete keeps a machine it does not accept and records it as rejected. |
+
+accrete never sees inside the machine, so "accepted" says only that it runs
+as declared, not that the install worked. No answer disc is made, no guest
+agent is read, and the ISO is never removed.
 
 ### Build from a disk image, any OS: `image-proxmox-vm`
 
@@ -374,7 +439,7 @@ missing. See `examples/fedora-coreos.yaml`.
 | `disk_storage` | `local-lvm` | Where the copy of the image is made. |
 | `disk_gb` | 0 | The boot disk is grown to this; 0 keeps the image's size. Grows only. |
 | `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | DHCP on the one card. A serial port is added: these images log their console there too. |
-| `bootstrap` | none | `users`, `timezone`, `files` in both formats; `packages` and `run` with cloud-init only. With Ignition, packages are refused (an image-based OS installs none at first boot: run the software as a container, or layer it later with rpm-ostree), so are `run` (write a systemd unit with `files`) and files under `/usr` (read-only). Any `{{secret.…}}` is refused: the disc is readable from storage. |
+| `bootstrap` | none | `users`, `timezone`, `files` in both formats; `packages` and `run` with cloud-init only. With Ignition, packages are refused (an image-based OS installs none at first boot: run the software as a container, or layer it later with rpm-ostree), so are `run` (write a systemd unit with `files`) and files under `/usr` (read-only). A `{{secret.…}}` is allowed (see Secrets): the seed is replaced after the first boot. |
 
 **The steps, each saved before the next:** create, guest-init,
 start-first-boot, first-boot, boot, confirm. A killed accrete is resumed by
@@ -406,7 +471,8 @@ it. `accrete permissions` lists them.
 Sybil does not run this blueprint yet.
 
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
-`firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
+`firewall:`, as Sybil does. `apply` creates missing `networks:` (see above)
+and writes none of the others (see below).
 
 ### Declare what already runs: `accrete init --from-cluster`
 
@@ -575,24 +641,45 @@ Proxmox, which sets no SMBIOS serial by default.
 declared serial or UUID) is built and tested against the sushy-tools
 emulator only. No command uses it yet.
 
+## Secrets
+
+A bootstrap may reference `{{secret.name}}`. accrete has no secret store: the
+value is read, when the machine is built, from the environment variable
+`ACCRETE_SECRET_<NAME>` (upper case, `-` and `.` become `_`); a missing one
+refuses the machine before anything is sent. The value is never written to the
+state, the plan, or any output, and the hashes accrete records are of the
+redacted seed. A seed or answer disc sits on the node's storage, where anyone allowed
+to read that storage can read it, so a secret stays there only for the first
+boot:
+
+- **clone and image:** the machine powers itself off at the end of its first
+  boot; accrete then deletes the seed and writes a redacted one with the same
+  cloud-init instance-id (so nothing runs twice), and starts it again;
+- **install:** the answer disc is deleted once the installer is done, as
+  before.
+
+A resize or other change to a built machine needs no secret. The profiles of
+`accrete bundle` still refuse secrets: every machine that boots the medium
+reads every profile.
+
 ## What v0.1 does not do
 
 apply refuses these before sending anything, and exits 1:
 
-- **Networks.** A plan line for a network that is not "unchanged" is refused,
-  because accrete does not create SDN zones or vnets.
+- **Changing a network.** A network that plans as `change` or `unknown`
+  (another subnet, gateway, NAT or DHCP range, another zone, not up on a
+  node) is refused: accrete creates missing networks, and never changes or
+  replaces one, which would re-plumb every machine on it.
 - **Firewalls.** A resource that declares `firewall:` is refused.
-- **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
-  accrete has no secret store.
-- **Other blueprints.** Only `provision-proxmox-vm`, `install-proxmox-vm`
-  and `image-proxmox-vm` are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
-  the template-building blueprint are refused by name.
+- **Other blueprints.** Only `provision-proxmox-vm`, `provision-proxmox-iso-vm`,
+  `install-proxmox-vm` and `image-proxmox-vm` are built. The template-building
+  blueprint is refused by name.
 
 Also not done in v0.1:
 
-- **Changing a built machine's other inputs** (template, network, hostname,
-  bootstrap). Such a line plans as `change` and is reported as not done.
-  Destroy and re-apply.
+- **Changing a built machine's other inputs in place** (template, network,
+  hostname, bootstrap). Such a line plans as `change` and is reported as not
+  done; `--replace` rebuilds the machine instead.
 - **Cross-node clones.** A machine is cloned on its template's node.
 - **Agents.** "Accepted" in accrete means what the provider observes: the
   machine runs, carries its minted SMBIOS UUID, and has the declared cores and

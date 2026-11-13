@@ -35,6 +35,12 @@ var (
 	privsBridge      = []string{"SDN.Use"}
 	privsGuestAgent  = []string{"VM.GuestAgent.Audit"}
 	privsSDNListing  = []string{"SDN.Audit"}
+	// Creating a network: POST /cluster/sdn/zones, vnets and subnets, and
+	// PUT /cluster/sdn, which Proxmox checks as SDN.Allocate on /sdn and its
+	// zones; SDN.Audit for the reads before and after. Bringing the bridge up
+	// is PUT /nodes/<node>/network, checked as Sys.Modify on the node.
+	privsSDNCreate   = []string{"SDN.Allocate", "SDN.Audit"}
+	privsNodeNetwork = []string{"Sys.Modify"}
 )
 
 // Permissions says what a token needs to apply and destroy the machines the
@@ -42,7 +48,11 @@ var (
 // live session it also reads what the token itself may do on each path (GET
 // /access/permissions, and the templates' configs to find their disks'
 // storage) and says what is missing. It never writes.
-func Permissions(ctx context.Context, s provider.Session, role string, recipes []provider.Recipe) provider.Permissions {
+//
+// networks are the networks apply would create: their zone, network and
+// subnet definitions, the cluster SDN apply and each node's network reload
+// are added, and a card on one of them is granted on its zone's path.
+func Permissions(ctx context.Context, s provider.Session, role string, recipes []provider.Recipe, networks []provider.NetworkSpec) provider.Permissions {
 	var c *Client
 	if ps, ok := s.(*session); ok {
 		c = ps.c
@@ -66,6 +76,13 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 			return
 		}
 		b.add(path, privs, why, false)
+	}
+
+	zones := map[string]string{}
+	for _, n := range networks {
+		zones[n.Name] = n.Zone
+		req("/sdn", privsSDNCreate, fmt.Sprintf("create network %s (zone %s, network, subnet) and apply the cluster's SDN", n.Name, n.Zone), "Net")
+		req("/nodes", privsNodeNetwork, fmt.Sprintf("reload each node's network so network %s's bridge comes up there", n.Name), "Node")
 	}
 
 	type tmpl struct{ node, vmid string }
@@ -97,7 +114,12 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 		req("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's cloud-init seed ISO", "Seed")
 		req("/nodes/"+node, privsNode, "read the node's capacity for the plan", "Node")
 		for _, nic := range r.Clone.Shape.NICs {
-			if br := KVField(nic, "bridge"); br != "" {
+			br := KVField(nic, "bridge")
+			switch zone, declared := zones[br]; {
+			case br == "":
+			case declared:
+				req("/sdn/zones/"+zone+"/"+br, privsBridge, fmt.Sprintf("attach the network card to network %s", br), "Net")
+			default:
 				req("/sdn/zones/localnetwork/"+br, privsBridge, fmt.Sprintf("attach the network card to %s (Proxmox VE 8 and 9)", br), "Net")
 			}
 		}
@@ -198,12 +220,16 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 func addInstall(b *grantBuilder, r provider.Recipe) {
 	c := r.Install.Create
 	b.add("/vms", privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
-	b.add("/vms", privsGuestAgent, "read the hostname an installed machine's guest agent reports, which its install is accepted on (on Proxmox VE 8 the privilege is VM.Monitor)", false)
+	if r.Install.AnswerFormat != "" {
+		b.add("/vms", privsGuestAgent, "read the hostname an installed machine's guest agent reports, which its install is accepted on (on Proxmox VE 8 the privilege is VM.Monitor)", false)
+	}
 	b.add("/storage/"+c.DiskStorage, privsDiskStorage, "create each installed machine's empty disk", false)
 	if m := isoVolume.FindStringSubmatch(c.Installer); m != nil {
 		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the installer ISO and boot it", false)
 	}
-	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each installed machine's answer disc", false)
+	if r.Install.AnswerFormat != "" {
+		b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each installed machine's answer disc", false)
+	}
 	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
 	for _, nic := range c.Shape.NICs {
 		if br := KVField(nic, "bridge"); br != "" {

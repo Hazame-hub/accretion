@@ -47,24 +47,13 @@ func firstStep(rec provider.Recipe) string {
 }
 
 // kickstart is the answer file of a machine installed from installer media:
-// its hostname and the resource's bootstrap profile, which may reference no
-// secret (the disc is readable from storage).
-func kickstart(rec provider.Recipe) (string, error) {
-	var profile *bootstrap.Profile
-	if rec.Bootstrap != nil {
-		p, err := bootstrap.Parse(rec.Bootstrap)
-		if err != nil {
-			return "", err
-		}
-		if err := p.Strings(func(s string) (string, error) {
-			if strings.Contains(s, "{{secret.") {
-				return "", errors.New("references a secret; an answer disc is readable from storage, so an install takes no secret")
-			}
-			return s, nil
-		}); err != nil {
-			return "", err
-		}
-		profile = p
+// its hostname and the resource's bootstrap profile, its strings rewritten
+// by fill. The answer disc is removed once the installer powers the machine
+// off, so a secret is on storage only for the install.
+func kickstart(rec provider.Recipe, fill filler) (string, error) {
+	profile, err := profileOf(rec, fill)
+	if err != nil {
+		return "", err
 	}
 	return bootstrap.RenderKickstart(bootstrap.Install{Hostname: rec.Hostname, Disk: rec.Install.Disk}, profile)
 }
@@ -98,13 +87,23 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("create: %w", err)
 			}
 			r.ResourceRefID, r.Step = m.Ref.ID, stepAnswer
+			if rec.Install.AnswerFormat == "" {
+				// The installer carries its own answers: no disc of accrete's.
+				r.Step = stepStartInstaller
+			}
 			if m.Found {
 				a.printf("  found its earlier machine %s by its owner mark, SMBIOS UUID %s; not created again\n", m.Ref.ID, r.MintedUUID)
 			} else {
 				a.printf("  created as %s, SMBIOS UUID %s, empty %d GiB disk, booting %s\n", m.Ref.ID, r.MintedUUID, req.Shape.DiskGB, media.Volume)
 			}
 		case stepAnswer:
-			ks, err := kickstart(rec)
+			ks, err := kickstart(rec, a.fillFor(true))
+			if err != nil {
+				return fmt.Errorf("answer file: %w", err)
+			}
+			// What is recorded is the file with its secrets out: a hash of a
+			// short secret is a way to guess it.
+			shown, err := kickstart(rec, withoutSecrets)
 			if err != nil {
 				return fmt.Errorf("answer file: %w", err)
 			}
@@ -115,7 +114,7 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 			if err != nil {
 				return fmt.Errorf("answer disc: %w", err)
 			}
-			r.Install.AnswerSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(ks)))
+			r.Install.AnswerSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(shown)))
 			r.Step = stepStartInstaller
 			a.printf("  answer disc %s on %s (label %s, %s SHA-256 %s)\n", pl.Volume, pl.Drive, bootstrap.KickstartLabel, bootstrap.KickstartFile, r.Install.AnswerSHA256)
 		case stepStartInstaller:
@@ -123,6 +122,9 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("start the installer: %w", err)
 			}
 			r.Step = stepInstalling
+			if rec.Install.AnswerFormat == "" {
+				r.Step = stepAccept
+			}
 			a.printf("  started; the installer runs on its own, no console input is sent\n")
 		case stepInstalling:
 			deadline := installDeadline(rec.Install.Timeout)
@@ -150,6 +152,9 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 			r.Step = stepAccept
 			a.printf("  started from its own disk\n")
 		case stepAccept:
+			if rec.Install.AnswerFormat == "" {
+				return a.acceptBooted(run, rec)
+			}
 			return a.acceptInstall(run, rec)
 		default:
 			return fmt.Errorf("the state names install step %q, which this accrete does not know", r.Step)
@@ -210,6 +215,37 @@ func (a *applier) awaitInstall(r *Applying, deadline time.Time) (bool, error) {
 		case <-time.After(installPoll):
 		}
 	}
+}
+
+// acceptBooted accepts a machine whose installer needs no answer file on
+// the hypervisor's evidence only, as Sybil's provision-proxmox-iso-vm does:
+// listed with its minted identity, running, with the declared cores and
+// memory. accrete cannot see what the installer does inside, so nothing more
+// is claimed; the installer ISO stays attached and the disk boots first once
+// it is installed.
+func (a *applier) acceptBooted(run uuid.UUID, rec provider.Recipe) error {
+	r := a.applying(run)
+	f, err := a.find(r)
+	if err != nil {
+		return fmt.Errorf("accept: %w", err)
+	}
+	if f == nil || f.State != "running" {
+		state := "not listed"
+		if f != nil {
+			state = f.State
+		}
+		return fmt.Errorf("accept: %s was started but is %s; it is not accepted, its record stays unknown and the machine is kept: "+
+			"run accrete apply again to check again, or accrete destroy to remove it", r.ResourceRefID, state)
+	}
+	var wrong []string
+	if want := rec.Install.Create.Shape.Cores; want > 0 && int(f.Facts.CPUCores) != want {
+		wrong = append(wrong, fmt.Sprintf("it has %d cores, not %d", f.Facts.CPUCores, want))
+	}
+	if want := rec.Install.Create.Shape.MemoryMB; want > 0 && f.Facts.RAMBytes != int64(want)<<20 {
+		wrong = append(wrong, fmt.Sprintf("it has %d MiB of memory, not %d", f.Facts.RAMBytes>>20, want))
+	}
+	a.printf("  booting %s, %d bytes; what the installer does inside the machine is not checked\n", r.Install.ISOVolume, r.Install.ISOSize)
+	return a.record(run, wrong, "accepted and recorded on the hypervisor's evidence only: running, with its minted SMBIOS UUID and the declared size")
 }
 
 // acceptInstall is D7: the machine powered off (the installing step), its

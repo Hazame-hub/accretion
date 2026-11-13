@@ -226,3 +226,40 @@ type WriteCapabilities struct {
 	// GrowDisk: Clone grows the boot disk to Shape.DiskGB.
 	GrowDisk bool `json:"grow_disk"`
 }
+
+// NetworkWriter is a session that can create a network machines join.
+// Optional, found by type assertion like Writer. It keeps Writer's rules: a
+// repeat is a no-op, and failures are refused, failed or unknown.
+type NetworkWriter interface {
+	CreateNetwork(ctx context.Context, n NetworkSpec) (NetworkCreated, error)
+}
+
+// NetworkSpec is one network to create: a routed subnet in a zone, which a
+// machine joins by naming Name as its card's bridge.
+type NetworkSpec struct {
+	Zone    string
+	Name    string
+	Subnet  string
+	Gateway string
+	SNAT    bool
+	// DHCPRange is START-END, "" for no DHCP. DHCP is a zone setting on
+	// Proxmox, so a range asks for a zone that serves DHCP.
+	DHCPRange string
+}
+
+// NetworkCreated says what CreateNetwork did.
+type NetworkCreated struct {
+	// Applied is false when the network was already there and live.
+	Applied bool
+	// Created names what this call defined (zone, network, subnet), in order.
+	Created []string
+}
+
+// SeedRemover is a Writer that can take a seed off a machine and delete it
+// from storage before the machine itself goes: what a seed that carried
+// secrets for the first boot needs once that boot is over. Optional, found by
+// type assertion; it keeps Writer's rules (identity is the guard, a repeat is
+// a no-op).
+type SeedRemover interface {
+	RemoveSeed(ctx context.Context, m Target, pl Placement) error
+}

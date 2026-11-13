@@ -75,7 +75,7 @@ func ImageBlueprints() []plan.Blueprint {
 			{Name: "net0", Type: "string", Default: "virtio,bridge=vmbr0", Label: "Network device",
 				Help: "The one card; the machine takes DHCP on it."},
 			{Name: "bootstrap", Type: "bootstrap", Label: "Bootstrap profile",
-				Help: "Users with their SSH keys and sudo, timezone and files, written into the seed. With ignition, packages and commands are refused. Secrets are refused: the disc is readable from storage."},
+				Help: "Users with their SSH keys and sudo, timezone and files, written into the seed. With ignition, packages and commands are refused. A {{secret.name}} comes from ACCRETE_SECRET_NAME and is on storage for the first boot only: the seed is then replaced by one without it."},
 		},
 	}}
 }

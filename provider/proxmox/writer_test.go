@@ -155,7 +155,7 @@ func TestALostCloneAnswerNeverMakesASecondGuest(t *testing.T) {
 	if n := pve.Named("web-4"); len(n) != 1 {
 		t.Fatalf("guests named web-4: %v, want the one clone", n)
 	}
-	if g := pve.Guest(100); g.Config["smbios1"] != "uuid="+mintA || g.Config["cores"] != "4" {
+	if g := pve.Guest(100); g.Config["smbios1"] != "uuid="+mintA || fmt.Sprint(g.Config["cores"]) != "4" {
 		t.Errorf("the clone was not finished: %v", g.Config)
 	}
 }

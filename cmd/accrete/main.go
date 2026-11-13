@@ -2,8 +2,8 @@
 // manifest against a local state file and what the provider it names reports
 // now.
 //
-//	accrete plan    -f env.yaml [--state accrete.state.json] [-o text|json]
-//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
+//	accrete plan    -f env.yaml [--state accrete.state.json] [-o text|json] [--detailed-exitcode]
+//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone] [--replace web/0]
 //	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
 //	accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
 //	accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
@@ -48,8 +48,8 @@ import (
 const usage = `accrete plans and applies an Environment manifest.
 
 Usage:
-  accrete plan    -f env.yaml [--state FILE] [--terraform-state PATH] [-o text|json] [--offline]
-  accrete apply   -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone]
+  accrete plan    -f env.yaml [--state FILE] [--terraform-state PATH] [-o text|json] [--offline] [--detailed-exitcode]
+  accrete apply   -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone] [--replace RES/N]
   accrete destroy -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone]
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
@@ -72,6 +72,12 @@ machine the state records for the environment. Both print the plan and ask
 for "yes" first, unless --auto-approve. A recorded machine the provider no
 longer lists keeps its record (the token may just not see it) unless
 --forget-gone.
+
+apply --replace web/0 deletes that declared machine and builds it again from
+the manifest: how to change what cannot change in place (another template,
+image or installer), or to rebuild a machine that was removed by hand. Only
+a machine accrete can prove it built is deleted; one the provider lists
+nothing for is rebuilt only after a complete listing showed it gone.
 
 --terraform-state names a Terraform state (terraform show -json output, or
 a terraform.tfstate) whose machines accrete leaves alone: a line that would
@@ -145,6 +151,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	file := fs.String("f", "", "the Environment manifest (YAML)")
 	statePath := fs.String("state", "", "the state file (default: accrete.state.json beside the manifest)")
 	output, offline, autoApprove, forgetGone, role := new(string), new(bool), new(bool), new(bool), new(string)
+	detailed := new(bool)
 	defaultTimeout := 2 * time.Minute
 	if writes {
 		autoApprove = fs.Bool("auto-approve", false, "do not ask before acting")
@@ -153,9 +160,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	} else {
 		output = fs.String("o", "text", "output: text or json")
 		offline = fs.Bool("offline", false, "do not contact the provider; recorded machines plan as unknown")
+		if cmd == "plan" {
+			detailed = fs.Bool("detailed-exitcode", false, "exit 0 when nothing differs, 3 when a line would create, change or delete, 4 when a line is unknown")
+		}
 	}
 	if cmd == "permissions" {
 		role = fs.String("role", "", "the role's name (default: accrete- and the environment's name)")
+	}
+	var replace []string
+	if cmd == "apply" {
+		fs.Func("replace", "delete this declared machine (resource/index, e.g. web/0) and build it again; repeat for more", func(v string) error {
+			for _, n := range strings.Split(v, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					replace = append(replace, n)
+				}
+			}
+			return nil
+		})
 	}
 	tfState := new(string)
 	if cmd != "permissions" {
@@ -259,14 +280,25 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return fail("%s: spec.provider: %s", *file, world.why(world.Refused))
 	}
 	if !writes {
-		return emit(stdout, *output, p, world.Notes)
+		code := emit(stdout, *output, p, world.Notes)
+		if code == 0 && *detailed {
+			code = drift(p)
+		}
+		return code
 	}
 	a := &applier{
 		ctx: ctx, in: stdin, out: stdout, cmd: cmd, autoApprove: *autoApprove,
 		statePath: *statePath, state: state, env: env, session: session,
 		provider: ProviderID(*ref), blueprints: driver.Blueprints(), recipe: driver.Recipe, explain: driver.Explain,
+		getenv: getenv,
 	}
-	a.gone, a.forgetGone = world.GoneDeletes, *forgetGone
+	a.gone, a.forgetGone, a.absent = world.GoneDeletes, *forgetGone, world.Absent
+	for _, n := range replace {
+		if a.replace == nil {
+			a.replace = map[string]bool{}
+		}
+		a.replace[n] = true
+	}
 	return a.run(p, world.Notes)
 }
 
@@ -317,6 +349,33 @@ func emit(w io.Writer, output string, p plan.Plan, notes []string) int {
 		return 1
 	}
 	return 0
+}
+
+// drift is plan --detailed-exitcode's answer for a plan without errors: 0
+// when every line is no-op, 4 when any line is unknown (the evidence cannot
+// say, which is not "nothing differs"), else 3.
+func drift(p plan.Plan) int {
+	actions := []plan.Action{}
+	for _, e := range p.Entries {
+		actions = append(actions, e.Action)
+	}
+	for _, n := range p.Networks {
+		actions = append(actions, n.Action)
+	}
+	for _, f := range p.Firewalls {
+		actions = append(actions, f.Action)
+	}
+	code := 0
+	for _, a := range actions {
+		switch a {
+		case plan.ActionNoOp:
+		case plan.ActionUnknown:
+			return 4
+		default:
+			code = 3
+		}
+	}
+	return code
 }
 
 // printPlan prints one instance per line with its reason, the networks and

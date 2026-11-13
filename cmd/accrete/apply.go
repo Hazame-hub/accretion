@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,6 +54,12 @@ type applier struct {
 	gone map[uuid.UUID]bool
 	// forgetGone retires the records of gone machines (--forget-gone).
 	forgetGone bool
+	// getenv reads the environment, where secrets come from (secrets.go).
+	getenv func(string) string
+	// replace are the machines (resource/index) to rebuild (--replace), and
+	// absent the recorded machines a complete listing showed nothing at.
+	replace map[string]bool
+	absent  map[uuid.UUID]bool
 }
 
 // errState is a state that could not be written. The run stops on it: what
@@ -74,9 +82,40 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 	if !p.OK() {
 		refuse("the plan has errors")
 	}
+	// Networks come first: a machine on a network that does not exist would
+	// fail half-built. accrete creates a missing network; it never changes
+	// or replaces one, since every machine on it would be re-plumbed.
+	netWriter, canNet := a.session.(provider.NetworkWriter)
+	var netSteps []step
+	creating := map[string]bool{}
+	netFailed := map[string]bool{}
 	for _, n := range p.Networks {
-		if n.Action != plan.ActionNoOp {
-			refuse("network %s plans as %s; accrete v0.1 does not write networks, and a machine on a network that does not exist would fail half-built", n.Name, n.Action)
+		n := n
+		switch {
+		case n.Action == plan.ActionNoOp:
+		case n.Action == plan.ActionCreate && a.cmd == "apply" && canNet:
+			creating[n.Name] = true
+			spec := provider.NetworkSpec{Zone: n.Zone, Name: n.Name, Subnet: n.Subnet, Gateway: n.Gateway, SNAT: n.SNAT, DHCPRange: n.DHCPRange}
+			label := fmt.Sprintf("create network %s (%s in zone %s)", n.Name, n.Subnet, n.Zone)
+			netSteps = append(netSteps, step{label, func() error {
+				res, err := netWriter.CreateNetwork(a.ctx, spec)
+				if err != nil {
+					netFailed[n.Name] = true
+					return err
+				}
+				if !res.Applied {
+					a.printf("  already there and live; nothing sent\n")
+				} else if len(res.Created) > 0 {
+					a.printf("  defined %s, applied the SDN, up on every node\n", strings.Join(res.Created, ", "))
+				} else {
+					a.printf("  applied the SDN, up on every node\n")
+				}
+				return nil
+			}})
+		case n.Action == plan.ActionCreate && a.cmd == "apply":
+			refuse("network %s plans as create; this provider cannot create networks, and a machine on a network that does not exist would fail half-built", n.Name)
+		case a.cmd == "apply":
+			refuse("network %s plans as %s (%s); accrete creates missing networks but never changes one, which would re-plumb every machine on it", n.Name, n.Action, n.Reason)
 		}
 	}
 	for _, r := range a.env.Spec.Resources {
@@ -98,33 +137,61 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 	}
 	var steps []step
 	resumed := map[uuid.UUID]bool{}
+	asked := map[string]bool{}
+	for name := range a.replace {
+		asked[name] = true
+	}
 	for _, e := range p.Entries {
 		e := e
 		name := fmt.Sprintf("%s/%d", e.Resource, e.Index)
+		waitsOnCreated := e.Action == plan.ActionUnknown && e.RunID == nil && e.RealizationID == nil && len(e.WaitsFor) > 0
+		for _, n := range e.WaitsFor {
+			waitsOnCreated = waitsOnCreated && creating[n]
+		}
 		switch {
-		case e.Action == plan.ActionCreate:
-			rec, err := a.buildable(e.Blueprint, e.Inputs)
+		case a.replace[name] && e.Action != plan.ActionCreate && !waitsOnCreated:
+			delete(asked, name)
+			old, why := a.replaceable(e)
+			if why != "" {
+				refuse("--replace %s: %s", name, why)
+				continue
+			}
+			rec, err := a.creatable(e)
 			if err != nil {
 				refuse("%s: %v", name, err)
 				continue
 			}
-			if rec.Install != nil {
-				// The installer must be there before anything is made.
-				if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Install.Create.Placement, rec.Install.Create.Installer); err != nil {
-					refuse("%s: %v", name, err)
-					continue
-				}
+			label := "replace " + name + " (delete " + old.ResourceRefID + ", then create it again)"
+			if e.Action == plan.ActionUnknown {
+				label = "replace " + name + " (" + old.ResourceRefID + " is already gone: retire its record, then create it again)"
 			}
-			if rec.Image != nil {
-				// So must the disk image, unless accrete is to fetch it.
-				_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
-				var refused *provider.RefusedError
-				if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
-					refuse("%s: %v", name, err)
-					continue
+			steps = append(steps, step{label, func() error {
+				gone := e
+				gone.BuiltName = builtName(old)
+				if err := a.delete(gone); err != nil {
+					return err
 				}
+				return a.create(e, rec)
+			}})
+		case e.Action == plan.ActionCreate || waitsOnCreated:
+			delete(asked, name)
+			rec, err := a.creatable(e)
+			if err != nil {
+				refuse("%s: %v", name, err)
+				continue
 			}
-			steps = append(steps, step{"create " + name, func() error { return a.create(e, rec) }})
+			label := "create " + name
+			if waitsOnCreated {
+				label += " (on " + strings.Join(e.WaitsFor, ", ") + ", once created)"
+			}
+			steps = append(steps, step{label, func() error {
+				for _, n := range e.WaitsFor {
+					if netFailed[n] {
+						return provider.Refused("not started: network %s was not created", n)
+					}
+				}
+				return a.create(e, rec)
+			}})
 		case e.Action == plan.ActionUnknown && e.RunID != nil:
 			i, ours := applying[*e.RunID]
 			if !ours || a.cmd == "destroy" {
@@ -133,6 +200,9 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				continue
 			}
 			rec, err := a.buildable(a.state.Applying[i].Blueprint, a.state.Applying[i].IntentInputs)
+			if err == nil {
+				err = a.secretsReady(rec)
+			}
 			if err != nil {
 				refuse("%s: %v", name, err)
 				continue
@@ -201,6 +271,10 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 		}
 	}
 
+	for _, name := range slices.Sorted(maps.Keys(asked)) {
+		refuse("--replace %s: no declared machine is %s (name it resource/index, as the plan does)", name, name)
+	}
+	steps = append(netSteps, steps...)
 	for _, msg := range notDone {
 		a.printf("  not done: %s\n", msg)
 	}
@@ -270,6 +344,71 @@ func (a *applier) describe(err error) string {
 }
 
 // buildable is the recipe for an instance, and why it cannot be built.
+// creatable is the recipe for a machine to create, once everything the create
+// needs is known to be there: its secrets, its installer or disk image.
+func (a *applier) creatable(e plan.Entry) (provider.Recipe, error) {
+	rec, err := a.buildable(e.Blueprint, e.Inputs)
+	if err == nil {
+		err = a.secretsReady(rec)
+	}
+	if err != nil {
+		return rec, err
+	}
+	if rec.Install != nil {
+		// The installer must be there before anything is made.
+		if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Install.Create.Placement, rec.Install.Create.Installer); err != nil {
+			return rec, err
+		}
+	}
+	if rec.Image != nil {
+		// So must the disk image, unless accrete is to fetch it.
+		_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
+		var refused *provider.RefusedError
+		if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
+			return rec, err
+		}
+	}
+	return rec, nil
+}
+
+// replaceable is the record of a declared machine --replace may delete and
+// build again, or why it may not. Only a machine accrete can prove is the one
+// it built (its minted identity, through this connector) is deleted, and only
+// one the provider shows, or a complete listing showed is gone: a machine the
+// evidence cannot place is left alone, as without --replace.
+func (a *applier) replaceable(e plan.Entry) (*plan.Realization, string) {
+	switch {
+	case e.RunID != nil:
+		return nil, "it is half-built by an earlier apply; run apply without --replace to finish it, or destroy to remove it"
+	case e.RealizationID == nil:
+		return nil, "the plan names no record for it"
+	}
+	r, err := a.realization(e.RealizationID)
+	if err != nil {
+		return nil, err.Error()
+	}
+	switch {
+	case r.MintedUUID == "":
+		return nil, "no identity was recorded when it was built, so accrete cannot prove a delete would reach it"
+	case a.gone[r.ID]:
+		return nil, "it is no longer declared; destroy, or apply with --forget-gone, retires its record"
+	case r.IntegrationID != a.provider:
+		return nil, "it was built through another connector than the manifest names"
+	case e.Action == plan.ActionUnknown && !a.absent[r.ID]:
+		return nil, "its state cannot be confirmed (" + e.Reason + "), so it is not deleted"
+	case e.Action != plan.ActionNoOp && e.Action != plan.ActionChange && e.Action != plan.ActionUnknown:
+		return nil, "it plans as " + string(e.Action)
+	}
+	return r, ""
+}
+
+// builtName is the name a recorded machine was built under, which a delete
+// checks; empty when its inputs do not say.
+func builtName(r *plan.Realization) string {
+	s, _ := r.IntentInputs["hostname"].(string)
+	return s
+}
+
 func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 	if a.recipe == nil {
 		return provider.Recipe{}, errors.New("the provider has no way to build machines")
@@ -282,7 +421,10 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot install machines from installer media")
 		}
-		if _, err := kickstart(rec); err != nil {
+		if rec.Install.AnswerFormat == "" {
+			return rec, nil
+		}
+		if _, err := kickstart(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err
 		}
 		return rec, nil
@@ -291,38 +433,43 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot build machines from disk images")
 		}
-		if _, err := imageSeed(rec); err != nil {
+		if _, err := imageSeed(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err
 		}
 		return rec, nil
 	}
-	if _, err := userData(rec); err != nil {
+	if _, err := userData(rec, withoutSecrets); err != nil {
 		return provider.Recipe{}, err
 	}
 	return rec, nil
 }
 
-// userData is the cloud-config of a machine: its hostname and the
-// resource's bootstrap profile. accrete has no secret store, so a profile
-// that references one is refused.
-func userData(rec provider.Recipe) (string, error) {
-	var profile *bootstrap.Profile
-	if rec.Bootstrap != nil {
-		p, err := bootstrap.Parse(rec.Bootstrap)
-		if err != nil {
-			return "", err
-		}
-		if err := p.Strings(func(s string) (string, error) {
-			if strings.Contains(s, "{{secret.") {
-				return "", errors.New("references a secret; accrete v0.1 has no secret store, so write the value in or leave it out")
-			}
-			return s, nil
-		}); err != nil {
-			return "", err
-		}
-		profile = p
+// secretsReady says why a build that writes a seed or an answer file could
+// not put its secrets in, before anything is sent: a secret not set, or a
+// provider that cannot replace the seed after the first boot.
+func (a *applier) secretsReady(rec provider.Recipe) error {
+	if !hasSecrets(rec) {
+		return nil
 	}
-	return bootstrap.Render(bootstrap.Base{Hostname: rec.Hostname}, profile)
+	if _, err := profileOf(rec, withSecrets(a.getenv)); err != nil {
+		return err
+	}
+	if _, ok := a.writer.(provider.SeedRemover); !ok && rec.Install == nil {
+		return errors.New("references a secret, and the provider cannot take a seed off a machine after its first boot, so the secret would stay on storage")
+	}
+	return nil
+}
+
+// userData is the cloud-config of a machine: its hostname and the
+// resource's bootstrap profile, its strings rewritten by fill (secrets.go).
+// A profile with a secret ends the first boot with a power-off, so its seed
+// can be replaced by one without the secret before the machine runs again.
+func userData(rec provider.Recipe, fill filler) (string, error) {
+	profile, err := profileOf(rec, fill)
+	if err != nil {
+		return "", err
+	}
+	return bootstrap.Render(bootstrap.Base{Hostname: rec.Hostname, PowerOffWhenDone: hasSecrets(rec)}, profile)
 }
 
 func (a *applier) save() error {
@@ -394,7 +541,7 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				a.printf("  found its earlier clone %s by its owner mark, SMBIOS UUID %s; not cloned again\n", m.Ref.ID, r.MintedUUID)
 			}
 		case stepGuestInit:
-			ud, err := userData(rec)
+			ud, err := userData(rec, a.fillFor(true))
 			if err != nil {
 				return fmt.Errorf("cloud-init: %w", err)
 			}
@@ -415,7 +562,39 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("start: %w", err)
 			}
 			r.Step = stepConfirm
-			a.printf("  started\n")
+			if hasSecrets(rec) {
+				r.Step = stepFirstBoot
+				a.printf("  started for its first boot, which powers it off once cloud-init is done, so its seed can lose the secrets\n")
+			} else {
+				a.printf("  started\n")
+			}
+		case stepFirstBoot:
+			done, err := a.awaitStopped(r, time.Now().Add(installDeadline(firstBootWait)))
+			if err != nil {
+				return fmt.Errorf("first boot: %w", err)
+			}
+			if !done {
+				return fmt.Errorf("first boot: %s has not powered itself off after the %s this apply waits, so cloud-init is not known "+
+					"to be done and its seed still carries the secrets; look at its console, run accrete apply again to keep waiting, "+
+					"or accrete destroy to remove it", r.ResourceRefID, roundDuration(installDeadline(firstBootWait)))
+			}
+			r.Step = stepScrubSeed
+			a.printf("  its first boot ran cloud-init and powered it off\n")
+		case stepScrubSeed:
+			ud, err := userData(rec, withoutSecrets)
+			if err != nil {
+				return fmt.Errorf("cloud-init: %w", err)
+			}
+			if err := a.scrubSeed(r, rec, ud); err != nil {
+				return err
+			}
+			r.Step = stepBoot
+		case stepBoot:
+			if _, err := a.writer.Power(a.ctx, a.target(r), provider.PowerRunning); err != nil {
+				return fmt.Errorf("start again: %w", err)
+			}
+			r.Step = stepConfirm
+			a.printf("  started again\n")
 		case stepConfirm:
 			return a.confirmBuilt(run, rec)
 		default:
@@ -425,6 +604,42 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 			return err
 		}
 	}
+}
+
+// stepScrubSeed replaces a seed that carried secrets, once the first boot is
+// over, and firstBootWait is how long a clone's first boot may take.
+const (
+	stepScrubSeed = "scrub-seed"
+	firstBootWait = 15 * time.Minute
+)
+
+// scrubSeed takes the seed that carried secrets off the stopped machine and
+// deletes it from storage, then puts back the same seed, under the same
+// instance id, with every secret taken out (ud). cloud-init sees the same
+// instance, so nothing of the first boot runs again.
+func (a *applier) scrubSeed(r *Applying, rec provider.Recipe, ud string) error {
+	sr, ok := a.writer.(provider.SeedRemover)
+	if !ok {
+		return errors.New("the provider cannot take a seed off a machine, so the seed with the secrets stays on storage")
+	}
+	if rec.Seed == nil {
+		return errors.New("the recipe names no seed placement")
+	}
+	if err := sr.RemoveSeed(a.ctx, a.target(r), rec.Seed(r.MintedUUID)); err != nil {
+		return fmt.Errorf("remove the seed with the secrets: %w", err)
+	}
+	pl, err := a.writer.GuestInit(a.ctx, a.target(r), provider.Seed{
+		UserData:      []byte(ud),
+		MetaData:      []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", r.MintedUUID, rec.Hostname)),
+		NetworkConfig: rec.NetworkConfig,
+		Storage:       rec.SeedStorage,
+		InstanceID:    r.MintedUUID,
+	})
+	if err != nil {
+		return fmt.Errorf("seed without the secrets: %w", err)
+	}
+	a.printf("  replaced its seed with %s, the same seed with the secrets taken out\n", pl.Volume)
+	return nil
 }
 
 // confirmBuilt reads the machine back and records it. Acceptance in accrete
