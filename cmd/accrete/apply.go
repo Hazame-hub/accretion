@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,6 +56,10 @@ type applier struct {
 	forgetGone bool
 	// getenv reads the environment, where secrets come from (secrets.go).
 	getenv func(string) string
+	// replace are the machines (resource/index) to rebuild (--replace), and
+	// absent the recorded machines a complete listing showed nothing at.
+	replace map[string]bool
+	absent  map[uuid.UUID]bool
 }
 
 // errState is a state that could not be written. The run stops on it: what
@@ -131,6 +137,10 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 	}
 	var steps []step
 	resumed := map[uuid.UUID]bool{}
+	asked := map[string]bool{}
+	for name := range a.replace {
+		asked[name] = true
+	}
 	for _, e := range p.Entries {
 		e := e
 		name := fmt.Sprintf("%s/%d", e.Resource, e.Index)
@@ -139,30 +149,36 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 			waitsOnCreated = waitsOnCreated && creating[n]
 		}
 		switch {
-		case e.Action == plan.ActionCreate || waitsOnCreated:
-			rec, err := a.buildable(e.Blueprint, e.Inputs)
-			if err == nil {
-				err = a.secretsReady(rec)
+		case a.replace[name] && e.Action != plan.ActionCreate && !waitsOnCreated:
+			delete(asked, name)
+			old, why := a.replaceable(e)
+			if why != "" {
+				refuse("--replace %s: %s", name, why)
+				continue
 			}
+			rec, err := a.creatable(e)
 			if err != nil {
 				refuse("%s: %v", name, err)
 				continue
 			}
-			if rec.Install != nil {
-				// The installer must be there before anything is made.
-				if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Install.Create.Placement, rec.Install.Create.Installer); err != nil {
-					refuse("%s: %v", name, err)
-					continue
-				}
+			label := "replace " + name + " (delete " + old.ResourceRefID + ", then create it again)"
+			if e.Action == plan.ActionUnknown {
+				label = "replace " + name + " (" + old.ResourceRefID + " is already gone: retire its record, then create it again)"
 			}
-			if rec.Image != nil {
-				// So must the disk image, unless accrete is to fetch it.
-				_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
-				var refused *provider.RefusedError
-				if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
-					refuse("%s: %v", name, err)
-					continue
+			steps = append(steps, step{label, func() error {
+				gone := e
+				gone.BuiltName = builtName(old)
+				if err := a.delete(gone); err != nil {
+					return err
 				}
+				return a.create(e, rec)
+			}})
+		case e.Action == plan.ActionCreate || waitsOnCreated:
+			delete(asked, name)
+			rec, err := a.creatable(e)
+			if err != nil {
+				refuse("%s: %v", name, err)
+				continue
 			}
 			label := "create " + name
 			if waitsOnCreated {
@@ -255,6 +271,9 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 		}
 	}
 
+	for _, name := range slices.Sorted(maps.Keys(asked)) {
+		refuse("--replace %s: no declared machine is %s (name it resource/index, as the plan does)", name, name)
+	}
 	steps = append(netSteps, steps...)
 	for _, msg := range notDone {
 		a.printf("  not done: %s\n", msg)
@@ -325,6 +344,71 @@ func (a *applier) describe(err error) string {
 }
 
 // buildable is the recipe for an instance, and why it cannot be built.
+// creatable is the recipe for a machine to create, once everything the create
+// needs is known to be there: its secrets, its installer or disk image.
+func (a *applier) creatable(e plan.Entry) (provider.Recipe, error) {
+	rec, err := a.buildable(e.Blueprint, e.Inputs)
+	if err == nil {
+		err = a.secretsReady(rec)
+	}
+	if err != nil {
+		return rec, err
+	}
+	if rec.Install != nil {
+		// The installer must be there before anything is made.
+		if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Install.Create.Placement, rec.Install.Create.Installer); err != nil {
+			return rec, err
+		}
+	}
+	if rec.Image != nil {
+		// So must the disk image, unless accrete is to fetch it.
+		_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
+		var refused *provider.RefusedError
+		if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
+			return rec, err
+		}
+	}
+	return rec, nil
+}
+
+// replaceable is the record of a declared machine --replace may delete and
+// build again, or why it may not. Only a machine accrete can prove is the one
+// it built (its minted identity, through this connector) is deleted, and only
+// one the provider shows, or a complete listing showed is gone: a machine the
+// evidence cannot place is left alone, as without --replace.
+func (a *applier) replaceable(e plan.Entry) (*plan.Realization, string) {
+	switch {
+	case e.RunID != nil:
+		return nil, "it is half-built by an earlier apply; run apply without --replace to finish it, or destroy to remove it"
+	case e.RealizationID == nil:
+		return nil, "the plan names no record for it"
+	}
+	r, err := a.realization(e.RealizationID)
+	if err != nil {
+		return nil, err.Error()
+	}
+	switch {
+	case r.MintedUUID == "":
+		return nil, "no identity was recorded when it was built, so accrete cannot prove a delete would reach it"
+	case a.gone[r.ID]:
+		return nil, "it is no longer declared; destroy, or apply with --forget-gone, retires its record"
+	case r.IntegrationID != a.provider:
+		return nil, "it was built through another connector than the manifest names"
+	case e.Action == plan.ActionUnknown && !a.absent[r.ID]:
+		return nil, "its state cannot be confirmed (" + e.Reason + "), so it is not deleted"
+	case e.Action != plan.ActionNoOp && e.Action != plan.ActionChange && e.Action != plan.ActionUnknown:
+		return nil, "it plans as " + string(e.Action)
+	}
+	return r, ""
+}
+
+// builtName is the name a recorded machine was built under, which a delete
+// checks; empty when its inputs do not say.
+func builtName(r *plan.Realization) string {
+	s, _ := r.IntentInputs["hostname"].(string)
+	return s
+}
+
 func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 	if a.recipe == nil {
 		return provider.Recipe{}, errors.New("the provider has no way to build machines")

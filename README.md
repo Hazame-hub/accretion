@@ -131,7 +131,7 @@ It holds no endpoint and no credential.
 | Command | What it does |
 | --- | --- |
 | `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
-| `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
+| `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone] [--replace RES/N]` | Prints the plan, asks, then acts on it one machine at a time. `--replace web/0` (repeatable, or comma-separated) deletes that declared machine and builds it again. |
 | `accrete destroy -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
 | `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
@@ -175,14 +175,26 @@ apply and destroy): how long the whole command may run.
   (on Proxmox, cores or memory without hotplug), confirm what it runs with,
   then record it. The disk only grows; a shrink is refused at plan time. A
   stopped machine is not changed: start it first.
-- **any other change:** not done. It is reported and the exit status is 1.
+- **any other change** (template, image, installer, network, hostname,
+  bootstrap): not done without `--replace`. It is reported and the exit
+  status is 1.
+- **`--replace web/0`:** the named declared machine is deleted (stopped,
+  deleted, its seed removed, its record retired) and built again from the
+  manifest, under a new identity, in the same run. Only a machine accrete can
+  prove it built is deleted: its minted UUID is checked first, and one built
+  through another connector or without a recorded identity is refused. One
+  the provider lists nothing for is rebuilt only when the listing was
+  complete (that is how a machine removed by hand comes back); a machine the
+  evidence cannot place, or one half-built by an earlier apply, is refused.
+  A name the manifest does not declare is refused. If the create fails after
+  the delete, the next apply plans that machine as a create.
 - **unknown:** a machine an earlier apply left half-built is finished (or,
   if the manifest no longer declares it, removed). A machine the manifest no
   longer declares (or that destroy is removing) and that the provider does
   not list any more keeps its record unless `--forget-gone` (see below). Any
   other unknown line is never touched, is reported as not done, and the exit
-  status is 1. That includes a declared machine removed by hand: v0.1
-  neither rebuilds it nor forgets it.
+  status is 1. That includes a declared machine removed by hand: apply
+  rebuilds it only with `--replace`.
 
 **Exit status:**
 - **0:** done, or nothing to do.
@@ -628,9 +640,9 @@ apply refuses these before sending anything, and exits 1:
 
 Also not done in v0.1:
 
-- **Changing a built machine's other inputs** (template, network, hostname,
-  bootstrap). Such a line plans as `change` and is reported as not done.
-  Destroy and re-apply.
+- **Changing a built machine's other inputs in place** (template, network,
+  hostname, bootstrap). Such a line plans as `change` and is reported as not
+  done; `--replace` rebuilds the machine instead.
 - **Cross-node clones.** A machine is cloned on its template's node.
 - **Agents.** "Accepted" in accrete means what the provider observes: the
   machine runs, carries its minted SMBIOS UUID, and has the declared cores and

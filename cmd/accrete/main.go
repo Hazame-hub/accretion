@@ -3,7 +3,7 @@
 // now.
 //
 //	accrete plan    -f env.yaml [--state accrete.state.json] [-o text|json]
-//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
+//	accrete apply   -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone] [--replace web/0]
 //	accrete destroy -f env.yaml [--state accrete.state.json] [--auto-approve] [--forget-gone]
 //	accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
 //	accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
@@ -49,7 +49,7 @@ const usage = `accrete plans and applies an Environment manifest.
 
 Usage:
   accrete plan    -f env.yaml [--state FILE] [--terraform-state PATH] [-o text|json] [--offline]
-  accrete apply   -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone]
+  accrete apply   -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone] [--replace RES/N]
   accrete destroy -f env.yaml [--state FILE] [--terraform-state PATH] [--auto-approve] [--forget-gone]
   accrete permissions -f env.yaml [-o text|json] [--offline] [--role NAME]
   accrete init --from-cluster --provider TYPE --endpoint URL --token-env VAR [...]
@@ -72,6 +72,12 @@ machine the state records for the environment. Both print the plan and ask
 for "yes" first, unless --auto-approve. A recorded machine the provider no
 longer lists keeps its record (the token may just not see it) unless
 --forget-gone.
+
+apply --replace web/0 deletes that declared machine and builds it again from
+the manifest: how to change what cannot change in place (another template,
+image or installer), or to rebuild a machine that was removed by hand. Only
+a machine accrete can prove it built is deleted; one the provider lists
+nothing for is rebuilt only after a complete listing showed it gone.
 
 --terraform-state names a Terraform state (terraform show -json output, or
 a terraform.tfstate) whose machines accrete leaves alone: a line that would
@@ -156,6 +162,17 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if cmd == "permissions" {
 		role = fs.String("role", "", "the role's name (default: accrete- and the environment's name)")
+	}
+	var replace []string
+	if cmd == "apply" {
+		fs.Func("replace", "delete this declared machine (resource/index, e.g. web/0) and build it again; repeat for more", func(v string) error {
+			for _, n := range strings.Split(v, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					replace = append(replace, n)
+				}
+			}
+			return nil
+		})
 	}
 	tfState := new(string)
 	if cmd != "permissions" {
@@ -267,7 +284,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		provider: ProviderID(*ref), blueprints: driver.Blueprints(), recipe: driver.Recipe, explain: driver.Explain,
 		getenv: getenv,
 	}
-	a.gone, a.forgetGone = world.GoneDeletes, *forgetGone
+	a.gone, a.forgetGone, a.absent = world.GoneDeletes, *forgetGone, world.Absent
+	for _, n := range replace {
+		if a.replace == nil {
+			a.replace = map[string]bool{}
+		}
+		a.replace[n] = true
+	}
 	return a.run(p, world.Notes)
 }
 
