@@ -124,6 +124,8 @@ It holds no endpoint and no credential.
 | `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
 | `accrete image fedora-coreos [--stream stable\|testing\|next] [--storage S] [--arch A]` | Prints the `image`, `image_url` and `image_sha256` inputs pinning `image-proxmox-vm` to the stream's current Fedora CoreOS proxmoxve image. Asks Fedora's stream metadata only; changes nothing. |
+| `accrete bundle -f install.yaml [-o DIR]` | Writes one kickstart for every machine a NetworkInstall file declares; each machine picks its own profile when it boots. See [Network installs](#network-installs-and-shared-answer-files). |
+| `accrete pxe -f install.yaml [-o DIR]` | Writes an iPXE gate, the kickstart for the armed machines and a proxy-DHCP config. Contacts nothing. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
@@ -427,6 +429,40 @@ the state (a shutdown typed inside the guest leaves no task), the line says
 `changed by: unknown` and why. Proxmox records no task for a config change
 made through its synchronous API, and lists others' tasks only to a token
 with `Sys.Audit` on the node. JSON output carries it as `changed_by`.
+
+## Network installs and shared answer files
+
+`accrete pxe` and `accrete bundle` install machines from an installer, VMs or
+physical machines alike, without anyone choosing an entry in a BIOS, UEFI or
+boot menu. They read a `NetworkInstall` file (see
+[examples/network-install](examples/network-install)) and contact nothing.
+
+- **One answer file for many machines.** Each machine's `ks.cfg` profile is
+  selected when it boots, from its SMBIOS UUID, serial number or a MAC. A
+  machine that matches no profile, or two, stops in `%pre` before any disk is
+  partitioned. Profiles hold no secret: `{{secret.*}}` is refused, because
+  every machine that boots the medium can read every profile.
+- **`accrete bundle -f install.yaml`** writes that `ks.cfg` for every
+  declared machine. Put it on a disc or USB stick labelled `OEMDRV` beside
+  the installer.
+- **`accrete pxe -f install.yaml`** writes `gate.ipxe`, `ks.cfg` and
+  `dnsmasq-proxy.conf`. The proxy DHCP assigns no address, so your DHCP
+  server is not changed. The gate boots the installer only for machines with
+  `armed: true`, and sends every other machine back to its own disk. Serve
+  `gate.ipxe`, `ks.cfg` and the installer's `images/pxeboot` files under
+  `spec.server`, and run `dnsmasq -k -C dnsmasq-proxy.conf` on a machine on
+  `spec.subnet`. Once a machine is installed, set `armed: false` and run
+  `accrete pxe` again, so its next network boot goes to its disk.
+
+Proven on Proxmox on 2026-11-06 with RHEL 9.6: one VM that was not armed
+booted its own disk, and one armed VM installed over the network with no
+keyboard and then booted from its disk. Not yet tried on physical hardware.
+UEFI Secure Boot must be off for `ipxe.efi`. Prefer UUID or MAC selectors on
+Proxmox, which sets no SMBIOS serial by default.
+
+`provider/redfish` (BMC virtual media, one-time boot, power, guarded by the
+declared serial or UUID) is built and tested against the sushy-tools
+emulator only. No command uses it yet.
 
 ## What v0.1 does not do
 
