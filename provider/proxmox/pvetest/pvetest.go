@@ -81,6 +81,20 @@ type Guest struct {
 	FromImage string
 }
 
+// asSent is a config value as Proxmox stores and returns it: cores, sockets
+// and memory are numbers in its JSON, however the form sent them. Kept as
+// strings, the guest listing's cpus would be a string, which no client of
+// the real API has to decode.
+func asSent(key, v string) any {
+	switch key {
+	case "cores", "sockets", "memory":
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return v
+}
+
 // applyPending is a start: the guest takes its pending config.
 func (g *Guest) applyPending() {
 	for k, v := range g.Pending {
@@ -689,7 +703,7 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				if g.Pending == nil {
 					g.Pending = map[string]any{}
 				}
-				g.Pending[k] = form.Get(k)
+				g.Pending[k] = asSent(k, form.Get(k))
 				if fmt.Sprint(g.Config[k]) == form.Get(k) {
 					delete(g.Pending, k)
 				}
@@ -704,7 +718,7 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 					v = fmt.Sprintf("%s=BC:24:11:%02X:%02X:%02X,%s", model, n+1, g.VMID/256, g.VMID%256, rest)
 				}
 			}
-			g.Config[k] = v
+			g.Config[k] = asSent(k, v)
 		}
 		data(nil)
 	case r.Method == http.MethodPut && rest == "/resize":
