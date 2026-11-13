@@ -87,6 +87,10 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("create: %w", err)
 			}
 			r.ResourceRefID, r.Step = m.Ref.ID, stepAnswer
+			if rec.Install.AnswerFormat == "" {
+				// The installer carries its own answers: no disc of accrete's.
+				r.Step = stepStartInstaller
+			}
 			if m.Found {
 				a.printf("  found its earlier machine %s by its owner mark, SMBIOS UUID %s; not created again\n", m.Ref.ID, r.MintedUUID)
 			} else {
@@ -118,6 +122,9 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("start the installer: %w", err)
 			}
 			r.Step = stepInstalling
+			if rec.Install.AnswerFormat == "" {
+				r.Step = stepAccept
+			}
 			a.printf("  started; the installer runs on its own, no console input is sent\n")
 		case stepInstalling:
 			deadline := installDeadline(rec.Install.Timeout)
@@ -145,6 +152,9 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 			r.Step = stepAccept
 			a.printf("  started from its own disk\n")
 		case stepAccept:
+			if rec.Install.AnswerFormat == "" {
+				return a.acceptBooted(run, rec)
+			}
 			return a.acceptInstall(run, rec)
 		default:
 			return fmt.Errorf("the state names install step %q, which this accrete does not know", r.Step)
@@ -205,6 +215,37 @@ func (a *applier) awaitInstall(r *Applying, deadline time.Time) (bool, error) {
 		case <-time.After(installPoll):
 		}
 	}
+}
+
+// acceptBooted accepts a machine whose installer needs no answer file on
+// the hypervisor's evidence only, as Sybil's provision-proxmox-iso-vm does:
+// listed with its minted identity, running, with the declared cores and
+// memory. accrete cannot see what the installer does inside, so nothing more
+// is claimed; the installer ISO stays attached and the disk boots first once
+// it is installed.
+func (a *applier) acceptBooted(run uuid.UUID, rec provider.Recipe) error {
+	r := a.applying(run)
+	f, err := a.find(r)
+	if err != nil {
+		return fmt.Errorf("accept: %w", err)
+	}
+	if f == nil || f.State != "running" {
+		state := "not listed"
+		if f != nil {
+			state = f.State
+		}
+		return fmt.Errorf("accept: %s was started but is %s; it is not accepted, its record stays unknown and the machine is kept: "+
+			"run accrete apply again to check again, or accrete destroy to remove it", r.ResourceRefID, state)
+	}
+	var wrong []string
+	if want := rec.Install.Create.Shape.Cores; want > 0 && int(f.Facts.CPUCores) != want {
+		wrong = append(wrong, fmt.Sprintf("it has %d cores, not %d", f.Facts.CPUCores, want))
+	}
+	if want := rec.Install.Create.Shape.MemoryMB; want > 0 && f.Facts.RAMBytes != int64(want)<<20 {
+		wrong = append(wrong, fmt.Sprintf("it has %d MiB of memory, not %d", f.Facts.RAMBytes>>20, want))
+	}
+	a.printf("  booting %s, %d bytes; what the installer does inside the machine is not checked\n", r.Install.ISOVolume, r.Install.ISOSize)
+	return a.record(run, wrong, "accepted and recorded on the hypervisor's evidence only: running, with its minted SMBIOS UUID and the declared size")
 }
 
 // acceptInstall is D7: the machine powered off (the installing step), its

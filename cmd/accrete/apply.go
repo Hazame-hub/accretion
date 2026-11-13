@@ -421,6 +421,9 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot install machines from installer media")
 		}
+		if rec.Install.AnswerFormat == "" {
+			return rec, nil
+		}
 		if _, err := kickstart(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err
 		}

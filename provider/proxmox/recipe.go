@@ -13,10 +13,14 @@ import (
 // poolName is a Proxmox resource pool id.
 var poolName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// BuildableBlueprint is the one blueprint accrete v0.1 builds with a Writer.
-// The others Accretion ships (an installer ISO, a template build) are not a
-// clone, and Recipe refuses them by name.
+// BuildableBlueprint is the clone blueprint accrete builds with a Writer.
+// It also builds ISOBlueprint, InstallBlueprint and ImageBlueprint; the
+// template build is refused by name.
 const BuildableBlueprint = "provision-proxmox-vm"
+
+// ISOBlueprint is Sybil's blueprint for a VM that boots an installer which
+// needs no answer file from accrete (an OKD agent ISO carries its own).
+const ISOBlueprint = "provision-proxmox-iso-vm"
 
 // Recipe turns a provision-proxmox-vm instance's inputs into what a Writer
 // builds: the clone, the seed's storage and the hostname. Unset inputs take
@@ -28,8 +32,8 @@ const BuildableBlueprint = "provision-proxmox-vm"
 //
 // See openspec accretion-apply, D4 and D8.
 func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
-	if blueprint != BuildableBlueprint && blueprint != InstallBlueprint && blueprint != ImageBlueprint {
-		return provider.Recipe{}, fmt.Errorf("blueprint %q is not one accrete builds; it builds %s, %s and %s", blueprint, BuildableBlueprint, InstallBlueprint, ImageBlueprint)
+	if blueprint != BuildableBlueprint && blueprint != InstallBlueprint && blueprint != ImageBlueprint && blueprint != ISOBlueprint {
+		return provider.Recipe{}, fmt.Errorf("blueprint %q is not one accrete builds; it builds %s, %s, %s and %s", blueprint, BuildableBlueprint, ISOBlueprint, InstallBlueprint, ImageBlueprint)
 	}
 	str := func(key, def string) string {
 		v, ok := inputs[key]
@@ -58,6 +62,9 @@ func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 	}
 	if blueprint == ImageBlueprint {
 		return imageRecipe(inputs, str, num)
+	}
+	if blueprint == ISOBlueprint {
+		return isoRecipe(inputs, str, num)
 	}
 	nics, network, err := recipeNetwork(str)
 	if err != nil {

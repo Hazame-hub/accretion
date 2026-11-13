@@ -75,7 +75,7 @@ func InstallBlueprints() []plan.Blueprint {
 			{Name: "net0", Type: "string", Default: "virtio,bridge=vmbr0", Label: "Network device",
 				Help: "The one card; the kickstart takes DHCP on it."},
 			{Name: "bootstrap", Type: "bootstrap", Label: "Bootstrap profile",
-				Help: "Users with their SSH keys and sudo, packages, timezone and files, written into the kickstart. Root stays locked. Commands to run and secrets are refused: the disc is readable from storage."},
+				Help: "Users with their SSH keys and sudo, packages, timezone and files, written into the kickstart. Root stays locked. Commands to run are refused. A {{secret.name}} comes from ACCRETE_SECRET_NAME and is on storage only until the install is done, when the disc is deleted."},
 		},
 	}}
 }
@@ -153,6 +153,72 @@ func installRecipe(inputs map[string]any, str func(string, string) string, num f
 			Disk:         KickstartDisk,
 			Timeout:      time.Duration(sizes["install_timeout_minutes"]) * time.Minute,
 			ISOSHA256:    strings.ToLower(sum),
+		},
+	}, nil
+}
+
+// isoRecipe is Recipe for ISOBlueprint: an empty VM of the declared size
+// that boots the installer, with no answer disc. Inputs only Sybil's run
+// uses (the connector, a notification) are ignored; on_enrolment_failure is
+// taken only as "destroy", Sybil's default, which accrete does not do either:
+// a machine that is not accepted is kept and recorded as rejected.
+func isoRecipe(inputs map[string]any, str func(string, string) string, num func(string, int) (int, error)) (provider.Recipe, error) {
+	var bp *plan.Blueprint
+	for _, b := range Blueprints() {
+		if b.ID == ISOBlueprint {
+			b := b
+			bp = &b
+		}
+	}
+	defaults := map[string]int{}
+	known := map[string]bool{}
+	for _, in := range bp.Inputs {
+		known[in.Name] = true
+		if n, ok := in.Default.(int); ok {
+			defaults[in.Name] = n
+		}
+	}
+	for k := range inputs {
+		if !known[k] {
+			return provider.Recipe{}, fmt.Errorf("input %s: %s takes no such input", k, ISOBlueprint)
+		}
+	}
+	node := str("pve_node", "pve")
+	hostname := str("hostname", "")
+	iso := str("iso", "")
+	disk := str("disk_storage", "local-lvm")
+	cpu := str("cpu", "x86-64-v2-AES")
+	switch {
+	case !nodeName.MatchString(node):
+		return provider.Recipe{}, fmt.Errorf("input pve_node: %q is not a node name", node)
+	case !nodeName.MatchString(hostname):
+		return provider.Recipe{}, fmt.Errorf("input hostname: %q is not a DNS label", hostname)
+	case !isoVolume.MatchString(iso):
+		return provider.Recipe{}, fmt.Errorf("input iso: %q is not an ISO volume such as local:iso/agent.x86_64.iso", iso)
+	case !storageName.MatchString(disk):
+		return provider.Recipe{}, fmt.Errorf("input disk_storage: %q is not a storage name", disk)
+	case !cpuModel.MatchString(cpu):
+		return provider.Recipe{}, fmt.Errorf("input cpu: %q is not a model name", cpu)
+	case str("on_enrolment_failure", "destroy") != "destroy":
+		return provider.Recipe{}, fmt.Errorf("input on_enrolment_failure: accrete keeps a machine it does not accept and records it as rejected; only the default, destroy, is taken")
+	}
+	sizes := map[string]int{}
+	for _, key := range []string{"cores", "memory_mb", "disk_gb"} {
+		n, err := num(key, defaults[key])
+		if err != nil {
+			return provider.Recipe{}, err
+		}
+		if n < 1 {
+			return provider.Recipe{}, fmt.Errorf("input %s: must be at least 1", key)
+		}
+		sizes[key] = n
+	}
+	shape := provider.Shape{Cores: sizes["cores"], MemoryMB: sizes["memory_mb"], CPU: cpu, DiskGB: sizes["disk_gb"],
+		NICs: []string{str("net0", "virtio,bridge=vmbr0")}}
+	return provider.Recipe{
+		Hostname: hostname,
+		Install: &provider.InstallRecipe{
+			Create: provider.CreateRequest{Name: hostname, Placement: node, Shape: shape, DiskStorage: disk, Installer: iso},
 		},
 	}, nil
 }

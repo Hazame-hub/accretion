@@ -347,6 +347,42 @@ clone, `VM.GuestAgent.Audit` on `/vms` is required (on Proxmox VE 8,
 Sybil does not run this blueprint yet: a manifest that uses it is refused there
 by name ("not one this connector offers").
 
+### Boot an installer that brings its own answers: `provision-proxmox-iso-vm`
+
+Some installers need no answer file from accrete: an OKD or OpenShift agent
+ISO carries its install-config and agent-config inside, and a live ISO may
+need none. This is Sybil's own blueprint, and accrete builds it the way Sybil
+does: an empty VM of the declared size, the ISO on `ide2`, boot order disk
+first then the ISO (the empty disk falls through to the installer, and once
+installed the disk boots), started, and accepted on the hypervisor's
+evidence only: listed with its minted SMBIOS UUID, running, with the declared
+cores and memory.
+
+```yaml
+    - name: master
+      count: 3
+      blueprint: provision-proxmox-iso-vm
+      inputs:
+        pve_node: pve
+        hostname: okd-master-{{instance.number}}
+        iso: local:iso/agent.x86_64.iso
+        disk_gb: 120
+        cores: 4
+        memory_mb: 16384
+        net0: virtio=52:54:00:aa:bb:0{{instance.number}},bridge=vmbr0
+```
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node`, `hostname`, `iso` | `pve`, (required), (required) | `hostname` is the VM's name in Proxmox; the installer decides the guest's own. |
+| `disk_storage`, `disk_gb` | `local-lvm`, 120 | The empty install disk. |
+| `cores`, `memory_mb`, `cpu`, `net0` | 4, 16384, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | Pin the MAC in `net0` when the installer names hosts by MAC (an agent-config does). |
+| `on_enrolment_failure` | `destroy` | Only the default is taken. accrete keeps a machine it does not accept and records it as rejected. |
+
+accrete never sees inside the machine, so "accepted" says only that it runs
+as declared, not that the install worked. No answer disc is made, no guest
+agent is read, and the ISO is never removed.
+
 ### Build from a disk image, any OS: `image-proxmox-vm`
 
 Most operating systems publish a cloud image: a disk that boots straight
@@ -635,9 +671,9 @@ apply refuses these before sending anything, and exits 1:
   node) is refused: accrete creates missing networks, and never changes or
   replaces one, which would re-plumb every machine on it.
 - **Firewalls.** A resource that declares `firewall:` is refused.
-- **Other blueprints.** Only `provision-proxmox-vm`, `install-proxmox-vm`
-  and `image-proxmox-vm` are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
-  the template-building blueprint are refused by name.
+- **Other blueprints.** Only `provision-proxmox-vm`, `provision-proxmox-iso-vm`,
+  `install-proxmox-vm` and `image-proxmox-vm` are built. The template-building
+  blueprint is refused by name.
 
 Also not done in v0.1:
 

@@ -220,12 +220,16 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 func addInstall(b *grantBuilder, r provider.Recipe) {
 	c := r.Install.Create
 	b.add("/vms", privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
-	b.add("/vms", privsGuestAgent, "read the hostname an installed machine's guest agent reports, which its install is accepted on (on Proxmox VE 8 the privilege is VM.Monitor)", false)
+	if r.Install.AnswerFormat != "" {
+		b.add("/vms", privsGuestAgent, "read the hostname an installed machine's guest agent reports, which its install is accepted on (on Proxmox VE 8 the privilege is VM.Monitor)", false)
+	}
 	b.add("/storage/"+c.DiskStorage, privsDiskStorage, "create each installed machine's empty disk", false)
 	if m := isoVolume.FindStringSubmatch(c.Installer); m != nil {
 		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the installer ISO and boot it", false)
 	}
-	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each installed machine's answer disc", false)
+	if r.Install.AnswerFormat != "" {
+		b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each installed machine's answer disc", false)
+	}
 	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
 	for _, nic := range c.Shape.NICs {
 		if br := KVField(nic, "bridge"); br != "" {
