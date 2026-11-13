@@ -58,7 +58,12 @@ You need:
      `Datastore.AllocateTemplate` (to upload the seed ISO) and
      `Datastore.Allocate` (to remove it);
    - on the node: `Sys.Audit`;
-   - on the bridge (Proxmox VE 8 and 9): `SDN.Use`.
+   - on the bridge (Proxmox VE 8 and 9): `SDN.Use`, on
+     `/sdn/zones/localnetwork/<bridge>`, or on `/sdn/zones/<zone>/<network>`
+     for a network the manifest declares;
+   - only while a declared network has to be created: `SDN.Allocate` and
+     `SDN.Audit` on `/sdn`, and `Sys.Modify` on the nodes (to reload their
+     network so the bridge comes up).
 
    Optional: `VM.GuestAgent.Audit` (Proxmox VE 9) or `VM.Monitor` (VE 8) on
    the machines lets `plan` show the guest agent's hostname and addresses;
@@ -151,6 +156,17 @@ apply and destroy): how long the whole command may run.
   names each card by the MAC Proxmox gave it at clone time, so each card gets
   its own addressing whatever the guest calls its interfaces. Two machines
   declared with the same fixed address are a plan error.
+- **create** of a network (`spec.networks`, a network the cluster lacks):
+  define what is missing of its simple zone (with the PVE IPAM, and dnsmasq
+  DHCP when the network has a range), its vnet and its subnet; apply the
+  cluster's SDN; reload each online node's network; wait until the vnet is up
+  on every node. Networks come first. A machine on a network created in the
+  same apply is created after it (`create web/0 (on web, once created)`), and
+  is not started when its network failed. A rerun finishes a half-made
+  network. Refused before anything is sent: a zone that exists as another
+  type or with the other DHCP setting (DHCP is a zone setting), SDN edits
+  somebody else left unapplied (the cluster apply would publish them), and a
+  node with network edits staged (its reload would apply them).
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **change** of cores, memory or disk size (the manifest changed, or the
@@ -406,7 +422,8 @@ it. `accrete permissions` lists them.
 Sybil does not run this blueprint yet.
 
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
-`firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
+`firewall:`, as Sybil does. `apply` creates missing `networks:` (see above)
+and writes none of the others (see below).
 
 ### Declare what already runs: `accrete init --from-cluster`
 
@@ -579,8 +596,10 @@ emulator only. No command uses it yet.
 
 apply refuses these before sending anything, and exits 1:
 
-- **Networks.** A plan line for a network that is not "unchanged" is refused,
-  because accrete does not create SDN zones or vnets.
+- **Changing a network.** A network that plans as `change` or `unknown`
+  (another subnet, gateway, NAT or DHCP range, another zone, not up on a
+  node) is refused: accrete creates missing networks, and never changes or
+  replaces one, which would re-plumb every machine on it.
 - **Firewalls.** A resource that declares `firewall:` is refused.
 - **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
   accrete has no secret store.

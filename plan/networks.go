@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -211,14 +212,22 @@ func gateOnNetworks(env envmanifest.Environment, entries []Entry, networks []Net
 		}
 		// Every card's network, not only the first: a VM whose second NIC
 		// names a bridge that does not exist yet fails just the same.
+		var waits []string
 		for _, nic := range byResource[e.Resource] {
 			n, declared := state[nic.Network]
 			if !declared || n.Action == ActionNoOp {
 				continue
 			}
+			if len(waits) == 0 {
+				e.Reason = fmt.Sprintf("waits for network %q, which is not live yet (%s); apply again once it is", n.Name, n.Action)
+			}
+			if !slices.Contains(waits, n.Name) {
+				waits = append(waits, n.Name)
+			}
+		}
+		if len(waits) > 0 {
 			e.Action = ActionUnknown
-			e.Reason = fmt.Sprintf("waits for network %q, which is not live yet (%s); apply again once it is", n.Name, n.Action)
-			break
+			e.WaitsFor = waits
 		}
 	}
 }

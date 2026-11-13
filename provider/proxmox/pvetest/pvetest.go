@@ -152,6 +152,16 @@ type Server struct {
 	// Vnets are the cluster's applied SDN vnets, by name, each with its
 	// zone, as GET /cluster/sdn/vnets lists them.
 	Vnets map[string]string
+	// Zones and Networks are the SDN the network writes made (sdn.go);
+	// Vnets are listed beside them as applied and up.
+	Zones    map[string]*Zone
+	Networks map[string]*Vnet
+	// NodeNetworkChanges is pve1's staged network diff, as GET
+	// /nodes/pve1/network reports it beside the interfaces.
+	NodeNetworkChanges string
+	// BridgeNeverUp keeps every vnet's bridge down after a node reload, as
+	// a zone with DHCP does on a node without dnsmasq.
+	BridgeNeverUp bool
 }
 
 // Task is one entry of the task log.
@@ -520,19 +530,7 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			have[priv] = 1
 		}
 		data(map[string]any{path: have})
-	case r.Method == http.MethodGet && p == "/cluster/sdn/vnets":
-		rows := []map[string]any{}
-		names := make([]string, 0, len(s.Vnets))
-		for n := range s.Vnets {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			rows = append(rows, map[string]any{"vnet": n, "zone": s.Vnets[n], "type": "vnet"})
-		}
-		data(rows)
-	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
-		data([]any{})
+	case s.sdn(w, r.Method, p, form, data, fail, task):
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":
 		localContent := "iso,vztmpl,import"
 		if s.NoImportContent {

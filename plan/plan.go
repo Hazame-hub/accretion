@@ -174,6 +174,10 @@ type Entry struct {
 	// the instance's expanded inputs. Set for declared instances only.
 	Blueprint string         `json:"blueprint,omitempty"`
 	Inputs    map[string]any `json:"inputs,omitempty"`
+	// WaitsFor names the declared networks a create is held for, because the
+	// provider does not have them live yet. A caller that creates those
+	// networks first may then create the machine in the same run.
+	WaitsFor []string `json:"waits_for,omitempty"`
 	// RealizationID, ResourceRefID and AssetID name what already exists, when
 	// something does.
 	RealizationID *uuid.UUID `json:"realization_id,omitempty"`

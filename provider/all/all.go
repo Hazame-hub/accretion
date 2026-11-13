@@ -30,7 +30,7 @@ type Driver struct {
 	// Permissions says what a credential needs to apply the recipes, as one
 	// role and the paths to grant it on; with a live session, also what the
 	// session's own credential lacks there now.
-	Permissions func(ctx context.Context, s provider.Session, role string, recipes []provider.Recipe) provider.Permissions
+	Permissions func(ctx context.Context, s provider.Session, role string, recipes []provider.Recipe, networks []provider.NetworkSpec) provider.Permissions
 	// Terraform maps the Terraform resources that describe this provider's
 	// machines; nil when the provider maps none.
 	Terraform *Terraform

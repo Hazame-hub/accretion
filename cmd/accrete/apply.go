@@ -74,9 +74,40 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 	if !p.OK() {
 		refuse("the plan has errors")
 	}
+	// Networks come first: a machine on a network that does not exist would
+	// fail half-built. accrete creates a missing network; it never changes
+	// or replaces one, since every machine on it would be re-plumbed.
+	netWriter, canNet := a.session.(provider.NetworkWriter)
+	var netSteps []step
+	creating := map[string]bool{}
+	netFailed := map[string]bool{}
 	for _, n := range p.Networks {
-		if n.Action != plan.ActionNoOp {
-			refuse("network %s plans as %s; accrete v0.1 does not write networks, and a machine on a network that does not exist would fail half-built", n.Name, n.Action)
+		n := n
+		switch {
+		case n.Action == plan.ActionNoOp:
+		case n.Action == plan.ActionCreate && a.cmd == "apply" && canNet:
+			creating[n.Name] = true
+			spec := provider.NetworkSpec{Zone: n.Zone, Name: n.Name, Subnet: n.Subnet, Gateway: n.Gateway, SNAT: n.SNAT, DHCPRange: n.DHCPRange}
+			label := fmt.Sprintf("create network %s (%s in zone %s)", n.Name, n.Subnet, n.Zone)
+			netSteps = append(netSteps, step{label, func() error {
+				res, err := netWriter.CreateNetwork(a.ctx, spec)
+				if err != nil {
+					netFailed[n.Name] = true
+					return err
+				}
+				if !res.Applied {
+					a.printf("  already there and live; nothing sent\n")
+				} else if len(res.Created) > 0 {
+					a.printf("  defined %s, applied the SDN, up on every node\n", strings.Join(res.Created, ", "))
+				} else {
+					a.printf("  applied the SDN, up on every node\n")
+				}
+				return nil
+			}})
+		case n.Action == plan.ActionCreate && a.cmd == "apply":
+			refuse("network %s plans as create; this provider cannot create networks, and a machine on a network that does not exist would fail half-built", n.Name)
+		case a.cmd == "apply":
+			refuse("network %s plans as %s (%s); accrete creates missing networks but never changes one, which would re-plumb every machine on it", n.Name, n.Action, n.Reason)
 		}
 	}
 	for _, r := range a.env.Spec.Resources {
@@ -101,8 +132,12 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 	for _, e := range p.Entries {
 		e := e
 		name := fmt.Sprintf("%s/%d", e.Resource, e.Index)
+		waitsOnCreated := e.Action == plan.ActionUnknown && e.RunID == nil && e.RealizationID == nil && len(e.WaitsFor) > 0
+		for _, n := range e.WaitsFor {
+			waitsOnCreated = waitsOnCreated && creating[n]
+		}
 		switch {
-		case e.Action == plan.ActionCreate:
+		case e.Action == plan.ActionCreate || waitsOnCreated:
 			rec, err := a.buildable(e.Blueprint, e.Inputs)
 			if err != nil {
 				refuse("%s: %v", name, err)
@@ -124,7 +159,18 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 					continue
 				}
 			}
-			steps = append(steps, step{"create " + name, func() error { return a.create(e, rec) }})
+			label := "create " + name
+			if waitsOnCreated {
+				label += " (on " + strings.Join(e.WaitsFor, ", ") + ", once created)"
+			}
+			steps = append(steps, step{label, func() error {
+				for _, n := range e.WaitsFor {
+					if netFailed[n] {
+						return provider.Refused("not started: network %s was not created", n)
+					}
+				}
+				return a.create(e, rec)
+			}})
 		case e.Action == plan.ActionUnknown && e.RunID != nil:
 			i, ours := applying[*e.RunID]
 			if !ours || a.cmd == "destroy" {
@@ -201,6 +247,7 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 		}
 	}
 
+	steps = append(netSteps, steps...)
 	for _, msg := range notDone {
 		a.printf("  not done: %s\n", msg)
 	}
