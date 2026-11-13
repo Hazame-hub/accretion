@@ -130,7 +130,7 @@ It holds no endpoint and no credential.
 
 | Command | What it does |
 | --- | --- |
-| `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
+| `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. `--detailed-exitcode` exits 0 when every line is unchanged, 3 when one would create, change or delete, and 4 when one is unknown, so a scheduled run can tell drift from no drift. |
 | `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone] [--replace RES/N]` | Prints the plan, asks, then acts on it one machine at a time. `--replace web/0` (repeatable, or comma-separated) deletes that declared machine and builds it again. |
 | `accrete destroy -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
@@ -196,7 +196,8 @@ apply and destroy): how long the whole command may run.
   status is 1. That includes a declared machine removed by hand: apply
   rebuilds it only with `--replace`.
 
-**Exit status:**
+**Exit status** (of plan, apply and destroy; plan with `--detailed-exitcode`
+also uses 3 and 4, see Commands):
 - **0:** done, or nothing to do.
 - **1:** the plan has errors, you declined, or a machine failed or was not done.
 - **2:** accrete could not plan or start. That covers bad flags, a bad manifest
