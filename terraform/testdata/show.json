@@ -1,0 +1,25 @@
+{
+  "format_version": "1.0",
+  "terraform_version": "1.14.8",
+  "values": {
+    "root_module": {
+      "resources": [
+        {"address": "proxmox_network_linux_bridge.vmbr0", "mode": "managed", "type": "proxmox_network_linux_bridge", "name": "vmbr0",
+         "provider_name": "registry.terraform.io/bpg/proxmox", "values": {"name": "vmbr0"}, "sensitive_values": {}},
+        {"address": "data.proxmox_virtual_environment_nodes.all", "mode": "data", "type": "proxmox_virtual_environment_nodes", "name": "all",
+         "provider_name": "registry.terraform.io/bpg/proxmox", "values": {}, "sensitive_values": {}}
+      ],
+      "child_modules": [
+        {
+          "address": "module.vms[\"web-01\"]",
+          "resources": [
+            {"address": "module.vms[\"web-01\"].proxmox_virtual_environment_vm.this", "mode": "managed", "type": "proxmox_virtual_environment_vm", "name": "this",
+             "provider_name": "registry.terraform.io/bpg/proxmox",
+             "values": {"vm_id": 201, "name": "web-01", "initialization": [{"user_account": [{"username": "ops", "password": "hunter2-secret"}]}]},
+             "sensitive_values": {"initialization": [{"user_account": [{"password": true}]}]}}
+          ]
+        }
+      ]
+    }
+  }
+}

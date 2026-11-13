@@ -119,10 +119,13 @@ It holds no endpoint and no credential.
 
 | Command | What it does |
 | --- | --- |
-| `accrete plan -f env.yaml [--state F] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
-| `accrete apply -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
-| `accrete destroy -f env.yaml [--state F] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
+| `accrete plan -f env.yaml [--state F] [--terraform-state P] [-o text\|json] [--offline]` | Prints what apply would do. Sends GET requests only and writes nothing. `--offline` asks the provider nothing. |
+| `accrete apply -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Prints the plan, asks, then acts on it one machine at a time. |
+| `accrete destroy -f env.yaml [--state F] [--terraform-state P] [--auto-approve] [--forget-gone]` | Removes every machine the state records for this environment, if the provider confirms it is still the machine that was built. |
 | `accrete init --from-cluster --provider T --endpoint URL --token-env V [--name N] [--select RE] [--template ID] [-f F]` | Writes a manifest and a state for the VMs the provider runs now, adopted under their current identity, then plans them. GET requests only; never overwrites a file. |
+| `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
+| `accrete import --from-terraform STATE --provider T --endpoint URL --token-env V [--select RE] [--template ID]` | Adopts the VMs a Terraform state records and writes `terraform-handover.tf` (removed blocks) for Terraform to forget them without destroying them. GET requests only. |
+| `accrete export --terraform -f env.yaml [--select RE]` / `accrete export --retire --terraform-state P -f env.yaml` | Writes import blocks for Terraform to take machines over; then retires accrete's records of those Terraform now records. |
 | `accrete image fedora-coreos [--stream stable\|testing\|next] [--storage S] [--arch A]` | Prints the `image`, `image_url` and `image_sha256` inputs pinning `image-proxmox-vm` to the stream's current Fedora CoreOS proxmoxve image. Asks Fedora's stream metadata only; changes nothing. |
 | `accrete bundle -f install.yaml [-o DIR]` | Writes one kickstart for every machine a NetworkInstall file declares; each machine picks its own profile when it boots. See [Network installs](#network-installs-and-shared-answer-files). |
 | `accrete pxe -f install.yaml [-o DIR]` | Writes an iPXE gate, the kickstart for the armed machines and a proxy-DHCP config. Contacts nothing. |
@@ -138,6 +141,10 @@ apply and destroy): how long the whole command may run.
   hostname, record it (see below). For `image-proxmox-vm`: create the machine with its disk
   copied from a disk image, seed it, start it, wait for its first boot to power it off, start
   it again, confirm it, record it (see below).
+  For a clone with more than one card or a fixed address, the seed's network config
+  names each card by the MAC Proxmox gave it at clone time, so each card gets
+  its own addressing whatever the guest calls its interfaces. Two machines
+  declared with the same fixed address are a plan error.
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **change** of cores, memory or disk size (the manifest changed, or the
@@ -231,7 +238,11 @@ instances would be identical is refused.
 | `memory_mb` | 2048 | |
 | `disk_gb` | 0 | Grows the boot disk to at least this. 0 keeps the template's. |
 | `cpu` | `x86-64-v2-AES` | A CPU model name. |
-| `net0` | `virtio,bridge=vmbr0` | The one network card, for example `virtio,bridge=vmbr0,tag=30`. |
+| `net0` | `virtio,bridge=vmbr0` | The first network card, for example `virtio,bridge=vmbr0,tag=30`. |
+| `net1`..`net3` | none | More cards, numbered without a gap. Each names its bridge. |
+| `ip_address` | none (DHCP) | The first card's fixed address with its prefix, `10.10.0.10/24`. `ip_address1`..`ip_address3` do the same for the other cards; a card without one takes DHCP. |
+| `gateway` | none | The default route, through the first card; needs `ip_address`, and must be in its network. |
+| `nameservers` | none | Comma-separated, with a fixed address. |
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
 | `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
 
@@ -430,6 +441,99 @@ the state (a shutdown typed inside the guest leaves no task), the line says
 made through its synchronous API, and lists others' tasks only to a token
 with `Sys.Audit` on the node. JSON output carries it as `changed_by`.
 
+## Next to Terraform: `accrete verify --terraform-state`
+
+A fleet Terraform owns stays Terraform's. verify only reads, and it answers a
+question `terraform plan` does not: is what the state records still what runs,
+and if not, who changed it?
+
+```sh
+terraform -chdir=terraform show -json > state.json     # or pass terraform.tfstate, or its directory
+accrete verify --terraform-state state.json --provider proxmox \
+  --endpoint https://pve.example.lan:8006 --verify-tls=false --token-env ACCRETE_PROXMOX_TOKEN
+```
+
+```
+Terraform state state.json (show-json, written by Terraform 1.14.8) against https://pve.example.lan:8006
+  matches  module.sdn.proxmox_sdn_vnet.vnets["mgmt"]  (vmgmt)
+  differs  module.vms["mgmt-01"].proxmox_virtual_environment_vm.this  (pve1/qemu/202)
+             net1 is on the machine, not in the state (bridge=vweb, link=up, mac=bc:24:11:00:02:12, vlan=30)
+             cores: the state records 2, the provider reports 4
+             changed by hamza@pve at 2026-11-08T09:30:00Z (qmconfig)
+  unknown  module.vms["gone-01"].proxmox_virtual_environment_vm.this  the provider lists no vm qemu/203; it may be gone, or the token may not see it
+  matches  module.vms["web-01"].proxmox_virtual_environment_vm.this  (pve1/qemu/201)
+not in the Terraform state:
+  vm       db-01  (pve1/qemu/101)
+  not verified (accrete does not map these types): proxmox_sdn_zone_simple (8)
+  2 match, 1 differ, 1 unknown, 1 not in the state, 8 not verified
+```
+
+- **Input.** The output of `terraform show -json` (or `tofu show -json`) is
+  the stable format, and the one to use with a remote backend; `-` reads it
+  from standard input. A local `terraform.tfstate` (format 4), or the
+  directory holding it, is read too, as a best effort.
+- **What is compared.** For bpg/proxmox `proxmox_virtual_environment_vm`: the
+  VMID, name, node, SMBIOS UUID (when the state records one), cores, memory,
+  each disk's size, and each network card's bridge, MAC, VLAN tag and link,
+  with cards and disks the machine has and the state does not. For
+  `proxmox_sdn_vnet`: that the vnet exists, in its zone. Other types are
+  counted as not verified. Machines (not templates) the provider runs that
+  no resource records are listed; with `--select`, they are not.
+- **Power** is compared only with `--terraform-power`: bpg/proxmox records
+  `started` as the configuration asks, which is often in
+  `lifecycle.ignore_changes`.
+- **Who changed it** uses the same rule as `plan` (see below), so a change
+  Proxmox applied without a task, such as a card added through the API, is
+  `changed by: unknown`. A config task is evidence of a config change, not
+  of which field it touched.
+- **Secrets.** Values Terraform marks sensitive are dropped while the state is
+  read. Nothing from the state is written anywhere.
+- **One owner.** `plan`, `apply` and `destroy` take `--terraform-state` too.
+  A line that would act on a machine the state records, or create a machine
+  with the name of one, is then an error, so apply and destroy refuse the plan
+  before sending anything. `init --from-cluster --terraform-state` leaves the
+  machines Terraform owns out of the manifest it writes.
+- **Never written.** verify sends GET requests only and writes neither the
+  Terraform state nor an accrete state. A resource stays Terraform's: accrete
+  never gives a machine a second owner.
+
+### Handing machines over, both ways
+
+Each direction goes through Terraform's own blocks. accrete never edits a
+Terraform state and never runs `terraform` for you.
+
+**From Terraform to accrete:** `accrete import --from-terraform STATE` (the
+same as `accrete init --from-terraform`) declares only the VMs that state
+records (`--select` matches their name or Terraform address), adopts each
+under the SMBIOS UUID it carries now, and writes `terraform-handover.tf`
+beside the manifest:
+
+```hcl
+removed {
+  from = proxmox_virtual_environment_vm.batch
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+Remove those machines from the Terraform configuration and put the file
+beside it. `terraform plan` must then say each "will no longer be managed by
+Terraform" and destroy nothing. A `removed` block names every instance under
+an address, so when only some instances of a `for_each` are handed over
+(`module.vms["web-1"]`), accrete prints `terraform state rm '<address>'` for
+each instead, for you to run. Until Terraform has forgotten them, both tools
+record the machines: apply neither.
+
+**From accrete to Terraform:** `accrete export --terraform -f env.yaml` writes
+`terraform-import.tf` with one `import {}` block per machine (bpg/proxmox,
+`id = "<node>/<vmid>"`). Run `terraform plan -generate-config-out=generated.tf`
+and `terraform apply`: Terraform writes the resources and imports them,
+creating nothing. Then remove the resources from the accrete manifest and run
+`accrete export --retire --terraform-state <the new state> -f env.yaml`. It
+retires accrete's record of each machine that state now records, and keeps
+(and names) any that it does not record or that the manifest still declares.
 ## Network installs and shared answer files
 
 `accrete pxe` and `accrete bundle` install machines from an installer, VMs or
@@ -471,8 +575,6 @@ apply refuses these before sending anything, and exits 1:
 - **Networks.** A plan line for a network that is not "unchanged" is refused,
   because accrete does not create SDN zones or vnets.
 - **Firewalls.** A resource that declares `firewall:` is refused.
-- **Fixed addresses and more than one card.** Machines take DHCP on their first
-  card. `ip_address*`, `gateway`, `nameservers` and `net1`..`net3` are refused.
 - **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
   accrete has no secret store.
 - **Other blueprints.** Only `provision-proxmox-vm`, `install-proxmox-vm`
@@ -490,8 +592,8 @@ Also not done in v0.1:
   memory. No agent enrols and nothing inside the guest is checked. Importing
   the manifest and state into Sybil re-evaluates acceptance with an agent.
 - **Adopting one machine into an existing manifest.** `accrete init
-  --from-cluster` declares and adopts what runs (see above), into a new
-  manifest.
+  --from-cluster` and `accrete import --from-terraform` declare and adopt
+  what runs (see above), into a new manifest.
 - **Providers other than Proxmox.**
 
 ## For provider authors

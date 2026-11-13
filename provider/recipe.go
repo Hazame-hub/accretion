@@ -18,6 +18,11 @@ type Recipe struct {
 	// Bootstrap is the blueprint's bootstrap input as declared, nil for
 	// none. Rendering it is the caller's.
 	Bootstrap any
+	// NetworkConfig is the cloud-init network config the seed carries, in
+	// the provider's own form (it may stand for values only the built
+	// machine has, which its Writer fills in); nil for its default, DHCP on
+	// the first card.
+	NetworkConfig []byte
 	// Seed is where the seed of a machine minted with the given UUID is put,
 	// for its removal once the machine is gone.
 	Seed func(instanceID string) Placement

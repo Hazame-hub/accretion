@@ -147,6 +147,9 @@ type Server struct {
 	// lists it. The server's own mutations add nothing to it: a test writes
 	// the entries a change made by somebody would have left.
 	Tasks []Task
+	// Vnets are the cluster's applied SDN vnets, by name, each with its
+	// zone, as GET /cluster/sdn/vnets lists them.
+	Vnets map[string]string
 }
 
 // Task is one entry of the task log.
@@ -515,6 +518,17 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 			have[priv] = 1
 		}
 		data(map[string]any{path: have})
+	case r.Method == http.MethodGet && p == "/cluster/sdn/vnets":
+		rows := []map[string]any{}
+		names := make([]string, 0, len(s.Vnets))
+		for n := range s.Vnets {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			rows = append(rows, map[string]any{"vnet": n, "zone": s.Vnets[n], "type": "vnet"})
+		}
+		data(rows)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/cluster/sdn/"):
 		data([]any{})
 	case r.Method == http.MethodGet && p == "/nodes/pve1/storage":
@@ -676,7 +690,15 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 				continue
 			}
 			delete(g.Pending, k)
-			g.Config[k] = form.Get(k)
+			v := form.Get(k)
+			// As Proxmox does: a card set without a MAC is given one.
+			if strings.HasPrefix(k, "net") {
+				if model, rest, _ := strings.Cut(v, ","); !strings.Contains(model, "=") {
+					n, _ := strconv.Atoi(k[3:])
+					v = fmt.Sprintf("%s=BC:24:11:%02X:%02X:%02X,%s", model, n+1, g.VMID/256, g.VMID%256, rest)
+				}
+			}
+			g.Config[k] = v
 		}
 		data(nil)
 	case r.Method == http.MethodPut && rest == "/resize":

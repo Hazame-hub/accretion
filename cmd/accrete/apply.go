@@ -399,10 +399,11 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("cloud-init: %w", err)
 			}
 			pl, err := a.writer.GuestInit(a.ctx, a.target(r), provider.Seed{
-				UserData:   []byte(ud),
-				MetaData:   []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", r.MintedUUID, rec.Hostname)),
-				Storage:    rec.SeedStorage,
-				InstanceID: r.MintedUUID,
+				UserData:      []byte(ud),
+				MetaData:      []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", r.MintedUUID, rec.Hostname)),
+				NetworkConfig: rec.NetworkConfig,
+				Storage:       rec.SeedStorage,
+				InstanceID:    r.MintedUUID,
 			})
 			if err != nil {
 				return fmt.Errorf("cloud-init seed: %w", err)

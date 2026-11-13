@@ -412,10 +412,10 @@ func TestApplyPowersAMachineAsDeclared(t *testing.T) {
 
 func TestApplyRefusesWhatV01CannotBuildBeforeSendingAnything(t *testing.T) {
 	cases := map[string]string{
-		"fixed address":    "        ip_address: 10.0.0.5/24\n",
-		"second card":      "        net1: virtio,bridge=vmbr1\n",
-		"secret reference": "        bootstrap:\n          run:\n            - echo {{secret.db_password}}\n",
-		"firewall":         "      firewall:\n        rules:\n          - {direction: in, action: ACCEPT, proto: tcp, dport: \"22\"}\n",
+		"one fixed address for two machines": "        ip_address: 10.0.0.5/24\n",
+		"a card with no bridge":              "        net1: virtio\n",
+		"secret reference":                   "        bootstrap:\n          run:\n            - echo {{secret.db_password}}\n",
+		"firewall":                           "      firewall:\n        rules:\n          - {direction: in, action: ACCEPT, proto: tcp, dport: \"22\"}\n",
 	}
 	for name, extra := range cases {
 		l := newApplyLab(t, extra)
