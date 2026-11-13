@@ -213,3 +213,16 @@ func TestSybilsPlannerRefusesTheInstallBlueprint(t *testing.T) {
 		t.Fatalf("accrete's list: errors %v, entries %+v", p.Errors, p.Entries)
 	}
 }
+
+func TestRecipeCarriesThePool(t *testing.T) {
+	r, err := Recipe(BuildableBlueprint, map[string]any{"template_vmid": "9000", "hostname": "web-1", "pool": "sybil-lab"})
+	if err != nil || r.Clone.Pool != "sybil-lab" {
+		t.Fatalf("pool = %q, %v", r.Clone.Pool, err)
+	}
+	if r, _ := Recipe(BuildableBlueprint, map[string]any{"template_vmid": "9000", "hostname": "web-1"}); r.Clone.Pool != "" {
+		t.Errorf("no pool declared, got %q", r.Clone.Pool)
+	}
+	if _, err := Recipe(BuildableBlueprint, map[string]any{"template_vmid": "9000", "hostname": "web-1", "pool": "a b"}); err == nil || !strings.Contains(err.Error(), "resource pool") {
+		t.Errorf("bad pool name: %v", err)
+	}
+}

@@ -72,6 +72,13 @@ func Blueprints() []plan.Blueprint {
 					Selector: "snippet_storage",
 				},
 				{
+					Name:    "pool",
+					Type:    "string",
+					Default: "",
+					Label:   "Resource pool",
+					Help:    "Put the new machine in this resource pool when it is cloned. Needed when the token's rights are granted on a pool rather than on /vms. Empty for none.",
+				},
+				{
 					Name:    "cpu",
 					Type:    "string",
 					Default: "x86-64-v2-AES",

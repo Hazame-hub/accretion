@@ -3,11 +3,15 @@ package proxmox
 import (
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/hazame-hub/accretion/provider"
 )
+
+// poolName is a Proxmox resource pool id.
+var poolName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // BuildableBlueprint is the one blueprint accrete v0.1 builds with a Writer.
 // The others Accretion ships (an installer ISO, a template build) are not a
@@ -63,6 +67,7 @@ func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 	template := str("template_vmid", "")
 	hostname := str("hostname", "")
 	storage := str("snippet_storage", "local")
+	pool := str("pool", "")
 	switch {
 	case !nodeName.MatchString(node):
 		return provider.Recipe{}, fmt.Errorf("input pve_node: %q is not a node name", node)
@@ -72,6 +77,8 @@ func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 		return provider.Recipe{}, fmt.Errorf("input hostname: %q is not a DNS label", hostname)
 	case !storageName.MatchString(storage):
 		return provider.Recipe{}, fmt.Errorf("input snippet_storage: %q is not a storage name", storage)
+	case pool != "" && !poolName.MatchString(pool):
+		return provider.Recipe{}, fmt.Errorf("input pool: %q is not a resource pool name", pool)
 	}
 	cores, err := num("cores", 2)
 	if err != nil {
@@ -88,7 +95,7 @@ func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 	return provider.Recipe{
 		Clone: provider.CloneRequest{
 			Template: provider.Ref{Kind: provider.KindTemplate, ID: template}, Placement: node,
-			Name: hostname, Full: true,
+			Name: hostname, Full: true, Pool: pool,
 			Shape: provider.Shape{Cores: cores, MemoryMB: memory, CPU: str("cpu", "x86-64-v2-AES"), DiskGB: disk,
 				NICs: nics},
 		},

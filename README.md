@@ -39,9 +39,15 @@ You need:
 - a DHCP server on the bridge.
 
 1. Create an API token. In the Proxmox UI, go to Datacenter → Permissions →
-   API Tokens. accrete puts new machines in no pool, so grant these on `/`
-   (or on `/vms`, the template, the storages, the node and the bridge, as
-   Proxmox's permission paths allow):
+   API Tokens. Unless a resource declares `pool`, accrete puts new machines in
+   no pool, so grant these on `/` (or on `/vms`, the template, the storages,
+   the node and the bridge, as Proxmox's permission paths allow). With
+   `pool: <name>`, the machines' privileges go on `/pool/<name>` instead, and
+   every other path gets a role of its own holding only what is used there
+   (the template only `VM.Audit` and `VM.Clone`, the disk storage only
+   `Datastore.AllocateSpace` and `Datastore.Audit`), so the token can neither
+   touch guests outside the pool, change the template, nor delete volumes it
+   did not make. `accrete permissions` prints these roles:
    - on the machines (`/vms`): `VM.Allocate`, `VM.Clone`, `VM.Audit`,
      `VM.PowerMgmt`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`,
      `VM.Config.Network`, `VM.Config.Options`, `VM.Config.CDROM`,
@@ -243,6 +249,7 @@ instances would be identical is refused.
 | `ip_address` | none (DHCP) | The first card's fixed address with its prefix, `10.10.0.10/24`. `ip_address1`..`ip_address3` do the same for the other cards; a card without one takes DHCP. |
 | `gateway` | none | The default route, through the first card; needs `ip_address`, and must be in its network. |
 | `nameservers` | none | Comma-separated, with a fixed address. |
+| `pool` | none | A resource pool the clone is created in. Grant the token's machine privileges on `/pool/<name>` to confine it there; `accrete permissions` prints the grants. Set at creation only. |
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
 | `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
 

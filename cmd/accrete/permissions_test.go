@@ -149,3 +149,85 @@ func TestPermissionsJSON(t *testing.T) {
 		}
 	}
 }
+
+// poolGrants is what a token scoped to pool sybil-lab needs on pvetest: the
+// machines' role on the pool, a clone-only role on the template.
+func poolGrants() map[string][]string {
+	g := fullGrants()
+	g["/pool/sybil-lab"] = g["/vms"]
+	delete(g, "/vms")
+	return g
+}
+
+func TestPermissionsWithAPoolGrantOnThePoolAndACloneOnlyRoleOnTheTemplate(t *testing.T) {
+	l := newApplyLab(t, "        pool: sybil-lab\n")
+	l.pve.Privileges = poolGrants()
+	out, code := l.accrete("", "permissions")
+	if code != 0 {
+		t.Fatalf("exit %d, want 0:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"/pool/sybil-lab: create, configure, start, stop and delete the new machines, which are cloned into pool sybil-lab",
+		"pveum acl modify /pool/sybil-lab --tokens '<user@realm!tokenid>' --roles accrete-lab",
+		"pveum role add accrete-labClone --privs \"VM.Audit,VM.Clone\"",
+		"pveum acl modify /vms/9000 --tokens '<user@realm!tokenid>' --roles accrete-labClone --propagate 0",
+		"(role accrete-labClone)",
+		"pveum role add accrete-labDisk --privs \"Datastore.AllocateSpace,Datastore.Audit\"",
+		"pveum acl modify /storage/local-lvm --tokens '<user@realm!tokenid>' --roles accrete-labDisk",
+		"pveum role add accrete-labSeed --privs \"Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit\"",
+		"pveum acl modify /nodes/pve1 --tokens '<user@realm!tokenid>' --roles accrete-labNode",
+		"pveum acl modify /sdn/zones/localnetwork/vmbr0 --tokens '<user@realm!tokenid>' --roles accrete-labNet",
+		"Optional: grant VM.GuestAgent.Audit on /pool/sybil-lab",
+		"The token has every privilege an apply needs.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"acl modify /vms --tokens", "/vms: create"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("a pool-scoped manifest still asks for %q:\n%s", bad, out)
+		}
+	}
+	// The main role holds the machines' privileges only: no storage
+	// privilege, or the token could delete any volume on the disk storage.
+	if !strings.Contains(out, "pveum role add accrete-lab --privs \"VM.Allocate,") || strings.Contains(out, "accrete-lab --privs \"Datastore") {
+		t.Errorf("main role:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "pveum role add accrete-lab --privs") && strings.Contains(line, "Datastore") {
+			t.Errorf("main role carries a storage privilege: %s", line)
+		}
+	}
+	l.onlyGETs()
+}
+
+func TestPermissionsWithAPoolNamesWhatAVmsOnlyTokenLacks(t *testing.T) {
+	l := newApplyLab(t, "        pool: sybil-lab\n")
+	l.pve.Privileges = fullGrants() // granted on /vms, not on the pool
+	out, code := l.accrete("", "permissions")
+	if code != 1 || !strings.Contains(out, "/pool/sybil-lab") || !strings.Contains(out, "the token lacks VM.Allocate") {
+		t.Fatalf("exit %d, want 1 naming the pool:\n%s", code, out)
+	}
+}
+
+func TestApplyClonesIntoTheDeclaredPool(t *testing.T) {
+	l := newApplyLab(t, "        pool: sybil-lab\n")
+	out, code := l.accrete("", "apply", "--auto-approve")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	n := 0
+	for _, g := range l.pve.Guests {
+		if name, _ := g.Config["name"].(string); g.Template || !strings.HasPrefix(name, "accrete-web-") {
+			continue
+		}
+		n++
+		if g.Pool != "sybil-lab" {
+			t.Errorf("guest %d was cloned into pool %q, want sybil-lab", g.VMID, g.Pool)
+		}
+	}
+	if n != 2 {
+		t.Errorf("%d machines built, want 2", n)
+	}
+}
