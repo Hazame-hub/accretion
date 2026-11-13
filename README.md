@@ -305,7 +305,7 @@ supported installer.
 | `disk_storage` | `local-lvm` | Where the empty disk is made. |
 | `disk_gb` | 32 | The only disk the kickstart partitions. |
 | `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | memory_mb is at least 1536. DHCP on the one card. |
-| `bootstrap` | none | `users`, `packages`, `timezone`, `files`. `run` is refused (its commands would run in the installer, not on the booted machine), and so is any `{{secret.…}}` (the disc is readable from storage). |
+| `bootstrap` | none | `users`, `packages`, `timezone`, `files`. `run` is refused (its commands would run in the installer, not on the booted machine). A `{{secret.…}}` is allowed (see Secrets): the answer disc is deleted once the install is done. |
 
 The kickstart is fixed on purpose: text mode, DHCP, root locked, only the new
 disk partitioned, the minimal environment plus `qemu-guest-agent`, and
@@ -390,7 +390,7 @@ missing. See `examples/fedora-coreos.yaml`.
 | `disk_storage` | `local-lvm` | Where the copy of the image is made. |
 | `disk_gb` | 0 | The boot disk is grown to this; 0 keeps the image's size. Grows only. |
 | `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | DHCP on the one card. A serial port is added: these images log their console there too. |
-| `bootstrap` | none | `users`, `timezone`, `files` in both formats; `packages` and `run` with cloud-init only. With Ignition, packages are refused (an image-based OS installs none at first boot: run the software as a container, or layer it later with rpm-ostree), so are `run` (write a systemd unit with `files`) and files under `/usr` (read-only). Any `{{secret.…}}` is refused: the disc is readable from storage. |
+| `bootstrap` | none | `users`, `timezone`, `files` in both formats; `packages` and `run` with cloud-init only. With Ignition, packages are refused (an image-based OS installs none at first boot: run the software as a container, or layer it later with rpm-ostree), so are `run` (write a systemd unit with `files`) and files under `/usr` (read-only). A `{{secret.…}}` is allowed (see Secrets): the seed is replaced after the first boot. |
 
 **The steps, each saved before the next:** create, guest-init,
 start-first-boot, first-boot, boot, confirm. A killed accrete is resumed by
@@ -592,6 +592,27 @@ Proxmox, which sets no SMBIOS serial by default.
 declared serial or UUID) is built and tested against the sushy-tools
 emulator only. No command uses it yet.
 
+## Secrets
+
+A bootstrap may reference `{{secret.name}}`. accrete has no secret store: the
+value is read, when the machine is built, from the environment variable
+`ACCRETE_SECRET_<NAME>` (upper case, `-` and `.` become `_`); a missing one
+refuses the machine before anything is sent. The value is never written to the
+state, the plan, or any output, and the hashes accrete records are of the
+redacted seed. A seed or answer disc sits on the node's storage, where anyone allowed
+to read that storage can read it, so a secret stays there only for the first
+boot:
+
+- **clone and image:** the machine powers itself off at the end of its first
+  boot; accrete then deletes the seed and writes a redacted one with the same
+  cloud-init instance-id (so nothing runs twice), and starts it again;
+- **install:** the answer disc is deleted once the installer is done, as
+  before.
+
+A resize or other change to a built machine needs no secret. The profiles of
+`accrete bundle` still refuse secrets: every machine that boots the medium
+reads every profile.
+
 ## What v0.1 does not do
 
 apply refuses these before sending anything, and exits 1:
@@ -601,8 +622,6 @@ apply refuses these before sending anything, and exits 1:
   node) is refused: accrete creates missing networks, and never changes or
   replaces one, which would re-plumb every machine on it.
 - **Firewalls.** A resource that declares `firewall:` is refused.
-- **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
-  accrete has no secret store.
 - **Other blueprints.** Only `provision-proxmox-vm`, `install-proxmox-vm`
   and `image-proxmox-vm` are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
   the template-building blueprint are refused by name.

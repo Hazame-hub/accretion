@@ -162,6 +162,9 @@ type Server struct {
 	// BridgeNeverUp keeps every vnet's bridge down after a node reload, as
 	// a zone with DHCP does on a node without dnsmasq.
 	BridgeNeverUp bool
+	// OnUpload, when set, sees every file uploaded to a storage, as it was
+	// uploaded: what a later removal leaves no trace of.
+	OnUpload func(volid string, body []byte)
 }
 
 // Task is one entry of the task log.
@@ -583,6 +586,9 @@ func (s *Server) storage(method string, m []string, form url.Values, data func(a
 			return
 		}
 		s.Files[store+":"+content+"/"+name] = []byte(form.Get("(body)"))
+		if s.OnUpload != nil {
+			s.OnUpload(store+":"+content+"/"+name, []byte(form.Get("(body)")))
+		}
 		task()
 	case method == http.MethodDelete && what == "content":
 		vol, _ := url.PathUnescape(rest)
@@ -761,10 +767,10 @@ func (s *Server) startInstall(g *Guest) {
 		v, _, _ := strings.Cut(line, ",")
 		return v
 	}
-	if g.FromImage != "" {
+	if seed := s.Files[vol("ide2")]; g.FromImage != "" || bytes.Contains(seed, []byte("power_state:")) {
 		// A first boot: its seed on ide2 asks for a power-off at its end,
-		// in cloud-config or in an Ignition config.
-		seed := s.Files[vol("ide2")]
+		// in cloud-config or in an Ignition config (a disk image's build,
+		// or a clone whose seed carries secrets).
 		if !bytes.Contains(seed, []byte("accrete-first-boot.service")) && !bytes.Contains(seed, []byte("power_state:")) {
 			return
 		}

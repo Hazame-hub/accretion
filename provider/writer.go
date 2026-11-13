@@ -254,3 +254,12 @@ type NetworkCreated struct {
 	// Created names what this call defined (zone, network, subnet), in order.
 	Created []string
 }
+
+// SeedRemover is a Writer that can take a seed off a machine and delete it
+// from storage before the machine itself goes: what a seed that carried
+// secrets for the first boot needs once that boot is over. Optional, found by
+// type assertion; it keeps Writer's rules (identity is the guard, a repeat is
+// a no-op).
+type SeedRemover interface {
+	RemoveSeed(ctx context.Context, m Target, pl Placement) error
+}

@@ -52,6 +52,8 @@ type applier struct {
 	gone map[uuid.UUID]bool
 	// forgetGone retires the records of gone machines (--forget-gone).
 	forgetGone bool
+	// getenv reads the environment, where secrets come from (secrets.go).
+	getenv func(string) string
 }
 
 // errState is a state that could not be written. The run stops on it: what
@@ -139,6 +141,9 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 		switch {
 		case e.Action == plan.ActionCreate || waitsOnCreated:
 			rec, err := a.buildable(e.Blueprint, e.Inputs)
+			if err == nil {
+				err = a.secretsReady(rec)
+			}
 			if err != nil {
 				refuse("%s: %v", name, err)
 				continue
@@ -179,6 +184,9 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				continue
 			}
 			rec, err := a.buildable(a.state.Applying[i].Blueprint, a.state.Applying[i].IntentInputs)
+			if err == nil {
+				err = a.secretsReady(rec)
+			}
 			if err != nil {
 				refuse("%s: %v", name, err)
 				continue
@@ -329,7 +337,7 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot install machines from installer media")
 		}
-		if _, err := kickstart(rec); err != nil {
+		if _, err := kickstart(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err
 		}
 		return rec, nil
@@ -338,38 +346,43 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot build machines from disk images")
 		}
-		if _, err := imageSeed(rec); err != nil {
+		if _, err := imageSeed(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err
 		}
 		return rec, nil
 	}
-	if _, err := userData(rec); err != nil {
+	if _, err := userData(rec, withoutSecrets); err != nil {
 		return provider.Recipe{}, err
 	}
 	return rec, nil
 }
 
-// userData is the cloud-config of a machine: its hostname and the
-// resource's bootstrap profile. accrete has no secret store, so a profile
-// that references one is refused.
-func userData(rec provider.Recipe) (string, error) {
-	var profile *bootstrap.Profile
-	if rec.Bootstrap != nil {
-		p, err := bootstrap.Parse(rec.Bootstrap)
-		if err != nil {
-			return "", err
-		}
-		if err := p.Strings(func(s string) (string, error) {
-			if strings.Contains(s, "{{secret.") {
-				return "", errors.New("references a secret; accrete v0.1 has no secret store, so write the value in or leave it out")
-			}
-			return s, nil
-		}); err != nil {
-			return "", err
-		}
-		profile = p
+// secretsReady says why a build that writes a seed or an answer file could
+// not put its secrets in, before anything is sent: a secret not set, or a
+// provider that cannot replace the seed after the first boot.
+func (a *applier) secretsReady(rec provider.Recipe) error {
+	if !hasSecrets(rec) {
+		return nil
 	}
-	return bootstrap.Render(bootstrap.Base{Hostname: rec.Hostname}, profile)
+	if _, err := profileOf(rec, withSecrets(a.getenv)); err != nil {
+		return err
+	}
+	if _, ok := a.writer.(provider.SeedRemover); !ok && rec.Install == nil {
+		return errors.New("references a secret, and the provider cannot take a seed off a machine after its first boot, so the secret would stay on storage")
+	}
+	return nil
+}
+
+// userData is the cloud-config of a machine: its hostname and the
+// resource's bootstrap profile, its strings rewritten by fill (secrets.go).
+// A profile with a secret ends the first boot with a power-off, so its seed
+// can be replaced by one without the secret before the machine runs again.
+func userData(rec provider.Recipe, fill filler) (string, error) {
+	profile, err := profileOf(rec, fill)
+	if err != nil {
+		return "", err
+	}
+	return bootstrap.Render(bootstrap.Base{Hostname: rec.Hostname, PowerOffWhenDone: hasSecrets(rec)}, profile)
 }
 
 func (a *applier) save() error {
@@ -441,7 +454,7 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				a.printf("  found its earlier clone %s by its owner mark, SMBIOS UUID %s; not cloned again\n", m.Ref.ID, r.MintedUUID)
 			}
 		case stepGuestInit:
-			ud, err := userData(rec)
+			ud, err := userData(rec, a.fillFor(true))
 			if err != nil {
 				return fmt.Errorf("cloud-init: %w", err)
 			}
@@ -462,7 +475,39 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("start: %w", err)
 			}
 			r.Step = stepConfirm
-			a.printf("  started\n")
+			if hasSecrets(rec) {
+				r.Step = stepFirstBoot
+				a.printf("  started for its first boot, which powers it off once cloud-init is done, so its seed can lose the secrets\n")
+			} else {
+				a.printf("  started\n")
+			}
+		case stepFirstBoot:
+			done, err := a.awaitStopped(r, time.Now().Add(installDeadline(firstBootWait)))
+			if err != nil {
+				return fmt.Errorf("first boot: %w", err)
+			}
+			if !done {
+				return fmt.Errorf("first boot: %s has not powered itself off after the %s this apply waits, so cloud-init is not known "+
+					"to be done and its seed still carries the secrets; look at its console, run accrete apply again to keep waiting, "+
+					"or accrete destroy to remove it", r.ResourceRefID, roundDuration(installDeadline(firstBootWait)))
+			}
+			r.Step = stepScrubSeed
+			a.printf("  its first boot ran cloud-init and powered it off\n")
+		case stepScrubSeed:
+			ud, err := userData(rec, withoutSecrets)
+			if err != nil {
+				return fmt.Errorf("cloud-init: %w", err)
+			}
+			if err := a.scrubSeed(r, rec, ud); err != nil {
+				return err
+			}
+			r.Step = stepBoot
+		case stepBoot:
+			if _, err := a.writer.Power(a.ctx, a.target(r), provider.PowerRunning); err != nil {
+				return fmt.Errorf("start again: %w", err)
+			}
+			r.Step = stepConfirm
+			a.printf("  started again\n")
 		case stepConfirm:
 			return a.confirmBuilt(run, rec)
 		default:
@@ -472,6 +517,42 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 			return err
 		}
 	}
+}
+
+// stepScrubSeed replaces a seed that carried secrets, once the first boot is
+// over, and firstBootWait is how long a clone's first boot may take.
+const (
+	stepScrubSeed = "scrub-seed"
+	firstBootWait = 15 * time.Minute
+)
+
+// scrubSeed takes the seed that carried secrets off the stopped machine and
+// deletes it from storage, then puts back the same seed, under the same
+// instance id, with every secret taken out (ud). cloud-init sees the same
+// instance, so nothing of the first boot runs again.
+func (a *applier) scrubSeed(r *Applying, rec provider.Recipe, ud string) error {
+	sr, ok := a.writer.(provider.SeedRemover)
+	if !ok {
+		return errors.New("the provider cannot take a seed off a machine, so the seed with the secrets stays on storage")
+	}
+	if rec.Seed == nil {
+		return errors.New("the recipe names no seed placement")
+	}
+	if err := sr.RemoveSeed(a.ctx, a.target(r), rec.Seed(r.MintedUUID)); err != nil {
+		return fmt.Errorf("remove the seed with the secrets: %w", err)
+	}
+	pl, err := a.writer.GuestInit(a.ctx, a.target(r), provider.Seed{
+		UserData:      []byte(ud),
+		MetaData:      []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", r.MintedUUID, rec.Hostname)),
+		NetworkConfig: rec.NetworkConfig,
+		Storage:       rec.SeedStorage,
+		InstanceID:    r.MintedUUID,
+	})
+	if err != nil {
+		return fmt.Errorf("seed without the secrets: %w", err)
+	}
+	a.printf("  replaced its seed with %s, the same seed with the secrets taken out\n", pl.Volume)
+	return nil
 }
 
 // confirmBuilt reads the machine back and records it. Acceptance in accrete

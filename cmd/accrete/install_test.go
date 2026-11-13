@@ -161,7 +161,7 @@ func TestAnUnsupportedAnswerFormatOrBootstrapFieldIsRefused(t *testing.T) {
 	for name, c := range map[string]struct{ extra, want string }{
 		"format": {"        answer_format: autoinstall\n", `"autoinstall" is not a format`},
 		"run":    {"          run: [\"echo hi\"]\n", "bootstrap run is not supported"},
-		"secret": {"          files: [{path: /etc/x, content: \"{{secret.pw}}\"}]\n", "takes no secret"},
+		"secret": {"          files: [{path: /etc/x, content: \"{{secret.pw}}\"}]\n", "set ACCRETE_SECRET_PW"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newInstallLab(t, c.extra)

@@ -265,6 +265,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		ctx: ctx, in: stdin, out: stdout, cmd: cmd, autoApprove: *autoApprove,
 		statePath: *statePath, state: state, env: env, session: session,
 		provider: ProviderID(*ref), blueprints: driver.Blueprints(), recipe: driver.Recipe, explain: driver.Explain,
+		getenv: getenv,
 	}
 	a.gone, a.forgetGone = world.GoneDeletes, *forgetGone
 	return a.run(p, world.Notes)

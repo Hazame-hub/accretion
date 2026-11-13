@@ -60,25 +60,13 @@ const (
 )
 
 // imageSeed is the user-data of a machine built from a disk image, in the
-// recipe's format: its hostname and the resource's bootstrap profile, which
-// may reference no secret (the disc is readable from storage). Either way
-// the first boot ends with a power-off.
-func imageSeed(rec provider.Recipe) (string, error) {
-	var profile *bootstrap.Profile
-	if rec.Bootstrap != nil {
-		p, err := bootstrap.Parse(rec.Bootstrap)
-		if err != nil {
-			return "", err
-		}
-		if err := p.Strings(func(s string) (string, error) {
-			if strings.Contains(s, "{{secret.") {
-				return "", errors.New("references a secret; a seed disc is readable from storage, so it takes no secret")
-			}
-			return s, nil
-		}); err != nil {
-			return "", err
-		}
-		profile = p
+// recipe's format: its hostname and the resource's bootstrap profile, its
+// strings rewritten by fill. Either way the first boot ends with a
+// power-off, after which a seed that carried a secret is replaced.
+func imageSeed(rec provider.Recipe, fill filler) (string, error) {
+	profile, err := profileOf(rec, fill)
+	if err != nil {
+		return "", err
 	}
 	switch rec.Image.SeedFormat {
 	case provider.SeedIgnition:
@@ -129,7 +117,11 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 				a.printf("  created as %s, SMBIOS UUID %s, its disk a copy of %s\n", m.Ref.ID, r.MintedUUID, media.Volume)
 			}
 		case stepGuestInit:
-			ud, err := imageSeed(rec)
+			ud, err := imageSeed(rec, a.fillFor(true))
+			if err != nil {
+				return fmt.Errorf("seed: %w", err)
+			}
+			shown, err := imageSeed(rec, withoutSecrets)
 			if err != nil {
 				return fmt.Errorf("seed: %w", err)
 			}
@@ -145,7 +137,7 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 			if r.Image == nil {
 				r.Image = &ImageRecord{SeedFormat: rec.Image.SeedFormat}
 			}
-			r.Image.SeedSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(ud)))
+			r.Image.SeedSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(shown)))
 			r.Step = stepStartFirstBoot
 			a.printf("  seeded with %s (%s, SHA-256 %s)\n", pl.Volume, rec.Image.SeedFormat, r.Image.SeedSHA256)
 		case stepStartFirstBoot:
@@ -166,7 +158,19 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 					"to keep waiting, or accrete destroy to remove it", r.ResourceRefID, roundDuration(deadline), rec.Image.SeedFormat)
 			}
 			r.Step = stepBoot
+			if hasSecrets(rec) {
+				r.Step = stepScrubSeed
+			}
 			a.printf("  its first boot applied its %s config and powered it off (this apply waited %s)\n", rec.Image.SeedFormat, roundDuration(time.Since(started)))
+		case stepScrubSeed:
+			ud, err := imageSeed(rec, withoutSecrets)
+			if err != nil {
+				return fmt.Errorf("seed: %w", err)
+			}
+			if err := a.scrubSeed(r, rec, ud); err != nil {
+				return err
+			}
+			r.Step = stepBoot
 		case stepBoot:
 			if _, err := a.writer.Power(a.ctx, a.target(r), provider.PowerRunning); err != nil {
 				return fmt.Errorf("start from its disk: %w", err)

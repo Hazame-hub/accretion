@@ -47,24 +47,13 @@ func firstStep(rec provider.Recipe) string {
 }
 
 // kickstart is the answer file of a machine installed from installer media:
-// its hostname and the resource's bootstrap profile, which may reference no
-// secret (the disc is readable from storage).
-func kickstart(rec provider.Recipe) (string, error) {
-	var profile *bootstrap.Profile
-	if rec.Bootstrap != nil {
-		p, err := bootstrap.Parse(rec.Bootstrap)
-		if err != nil {
-			return "", err
-		}
-		if err := p.Strings(func(s string) (string, error) {
-			if strings.Contains(s, "{{secret.") {
-				return "", errors.New("references a secret; an answer disc is readable from storage, so an install takes no secret")
-			}
-			return s, nil
-		}); err != nil {
-			return "", err
-		}
-		profile = p
+// its hostname and the resource's bootstrap profile, its strings rewritten
+// by fill. The answer disc is removed once the installer powers the machine
+// off, so a secret is on storage only for the install.
+func kickstart(rec provider.Recipe, fill filler) (string, error) {
+	profile, err := profileOf(rec, fill)
+	if err != nil {
+		return "", err
 	}
 	return bootstrap.RenderKickstart(bootstrap.Install{Hostname: rec.Hostname, Disk: rec.Install.Disk}, profile)
 }
@@ -104,7 +93,13 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 				a.printf("  created as %s, SMBIOS UUID %s, empty %d GiB disk, booting %s\n", m.Ref.ID, r.MintedUUID, req.Shape.DiskGB, media.Volume)
 			}
 		case stepAnswer:
-			ks, err := kickstart(rec)
+			ks, err := kickstart(rec, a.fillFor(true))
+			if err != nil {
+				return fmt.Errorf("answer file: %w", err)
+			}
+			// What is recorded is the file with its secrets out: a hash of a
+			// short secret is a way to guess it.
+			shown, err := kickstart(rec, withoutSecrets)
 			if err != nil {
 				return fmt.Errorf("answer file: %w", err)
 			}
@@ -115,7 +110,7 @@ func (a *applier) install(run uuid.UUID, rec provider.Recipe) error {
 			if err != nil {
 				return fmt.Errorf("answer disc: %w", err)
 			}
-			r.Install.AnswerSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(ks)))
+			r.Install.AnswerSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(shown)))
 			r.Step = stepStartInstaller
 			a.printf("  answer disc %s on %s (label %s, %s SHA-256 %s)\n", pl.Volume, pl.Drive, bootstrap.KickstartLabel, bootstrap.KickstartFile, r.Install.AnswerSHA256)
 		case stepStartInstaller:
