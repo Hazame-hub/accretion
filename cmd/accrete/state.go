@@ -41,6 +41,9 @@ type State struct {
 	// Installs is what produced each machine accrete installed from
 	// installer media, by realization id. accrete's own, like Applying.
 	Installs map[uuid.UUID]InstallRecord `json:"installs,omitempty"`
+	// Images is what produced each machine accrete built from a disk
+	// image, by realization id. accrete's own, like Applying.
+	Images map[uuid.UUID]ImageRecord `json:"images,omitempty"`
 }
 
 // InstallRecord is the provenance of an install (openspec
@@ -77,10 +80,13 @@ type Applying struct {
 	ResourceRefID string `json:"resource_ref_id,omitempty"`
 	// Step is the next step to run: clone, guest-init, power or confirm; or
 	// for an install, create, answer, start-installer, installing,
-	// remove-media, boot or accept.
+	// remove-media, boot or accept; for a build from a disk image, create,
+	// guest-init, start-first-boot, first-boot, boot or confirm.
 	Step string `json:"step"`
 	// Install is set for a machine installed from installer media.
 	Install *InstallRecord `json:"install,omitempty"`
+	// Image is set for a machine built from a disk image.
+	Image *ImageRecord `json:"image,omitempty"`
 }
 
 // The steps of a build, in order.

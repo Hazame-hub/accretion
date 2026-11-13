@@ -24,6 +24,41 @@ type Recipe struct {
 	// Install is set when the machine is installed from installer media
 	// with an Installer rather than cloned: Clone is then unused.
 	Install *InstallRecipe
+	// Image is set when the machine's disk is copied from a disk image with
+	// an Installer's Create rather than cloned: Clone is then unused.
+	Image *ImageRecipe
+}
+
+// The formats of the seed a machine built from a disk image reads at its
+// first boot.
+const (
+	// SeedCloudInit is cloud-config, for images that run cloud-init.
+	SeedCloudInit = "cloud-init"
+	// SeedIgnition is an Ignition config, for Fedora CoreOS and other
+	// images that run Ignition.
+	SeedIgnition = "ignition"
+)
+
+// ImageRecipe is how a machine is built from a disk image: its disk is a
+// copy of the image, its seed is read at the first boot, and the first boot
+// ends with a power-off the seed asks for, which is what the build waits
+// for before it starts the machine again.
+type ImageRecipe struct {
+	// Create is the request without its per-machine guards, as Clone is.
+	Create CreateRequest
+	// SeedFormat is SeedCloudInit or SeedIgnition.
+	SeedFormat string
+	// Timeout bounds one apply's wait for the first boot to power the
+	// machine off.
+	Timeout time.Duration
+	// ImageSHA256 is the image's SHA-256 as the manifest declares it, ""
+	// for none. Recorded as declared unless accrete fetched the image from
+	// URL, in which case it is the hash of the downloaded file, checked.
+	ImageSHA256 string
+	// URL, when set, is where accrete fetches the image from when the
+	// provider does not have it yet. ImageSHA256 is then required. A URL
+	// ending in .xz or .gz is decompressed before upload.
+	URL string
 }
 
 // InstallRecipe is how a machine is installed from installer media.

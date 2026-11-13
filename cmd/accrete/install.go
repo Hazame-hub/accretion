@@ -40,7 +40,7 @@ var (
 
 // firstStep is where a new machine's build starts.
 func firstStep(rec provider.Recipe) string {
-	if rec.Install != nil {
+	if rec.Install != nil || rec.Image != nil {
 		return stepCreate
 	}
 	return stepClone

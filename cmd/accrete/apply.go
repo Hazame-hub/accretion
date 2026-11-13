@@ -115,6 +115,15 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 					continue
 				}
 			}
+			if rec.Image != nil {
+				// So must the disk image, unless accrete is to fetch it.
+				_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
+				var refused *provider.RefusedError
+				if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
+					refuse("%s: %v", name, err)
+					continue
+				}
+			}
 			steps = append(steps, step{"create " + name, func() error { return a.create(e, rec) }})
 		case e.Action == plan.ActionUnknown && e.RunID != nil:
 			i, ours := applying[*e.RunID]
@@ -134,6 +143,12 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				// editing the manifest. The rest of the build stays as recorded.
 				if now, err := a.buildable(e.Blueprint, e.Inputs); err == nil && now.Install != nil {
 					rec.Install.Timeout = now.Install.Timeout
+				}
+			}
+			if rec.Image != nil && e.Inputs != nil && e.Blueprint == a.state.Applying[i].Blueprint {
+				// Likewise the first boot's deadline.
+				if now, err := a.buildable(e.Blueprint, e.Inputs); err == nil && now.Image != nil {
+					rec.Image.Timeout = now.Image.Timeout
 				}
 			}
 			resumed[*e.RunID] = true
@@ -272,6 +287,15 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		}
 		return rec, nil
 	}
+	if rec.Image != nil {
+		if _, ok := a.writer.(provider.Installer); !ok {
+			return provider.Recipe{}, errors.New("the provider cannot build machines from disk images")
+		}
+		if _, err := imageSeed(rec); err != nil {
+			return provider.Recipe{}, err
+		}
+		return rec, nil
+	}
 	if _, err := userData(rec); err != nil {
 		return provider.Recipe{}, err
 	}
@@ -346,6 +370,9 @@ func (a *applier) target(r *Applying) provider.Target {
 func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 	if rec.Install != nil {
 		return a.install(run, rec)
+	}
+	if rec.Image != nil {
+		return a.fromImage(run, rec)
 	}
 	for {
 		r := a.applying(run)
@@ -433,6 +460,17 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 	return a.record(run, wrong, "confirmed and recorded: running, as declared")
 }
 
+// shapeOf is the size a recipe declares, however the machine is built.
+func shapeOf(rec provider.Recipe) provider.Shape {
+	switch {
+	case rec.Install != nil:
+		return rec.Install.Create.Shape
+	case rec.Image != nil:
+		return rec.Image.Create.Shape
+	}
+	return rec.Clone.Shape
+}
+
 // record turns a built machine's record into a realization, accepted unless
 // wrong says why not, and drops it from what is being applied.
 func (a *applier) record(run uuid.UUID, wrong []string, accepted string) error {
@@ -468,6 +506,12 @@ func (a *applier) record(run uuid.UUID, wrong []string, accepted string) error {
 			a.state.Installs = map[uuid.UUID]InstallRecord{}
 		}
 		a.state.Installs[id] = *r.Install
+	}
+	if r.Image != nil {
+		if a.state.Images == nil {
+			a.state.Images = map[uuid.UUID]ImageRecord{}
+		}
+		a.state.Images[id] = *r.Image
 	}
 	a.dropApplying(run)
 	if err := a.save(); err != nil {
@@ -583,7 +627,7 @@ func (a *applier) resize(rz provider.Resizer, e plan.Entry, rec provider.Recipe)
 		return err
 	}
 	target := provider.Target{Ref: provider.Ref{Kind: provider.KindVM, ID: r.ResourceRefID}, ExpectUUID: r.MintedUUID, Name: e.BuiltName}
-	shape := rec.Clone.Shape
+	shape := shapeOf(rec)
 	res, err := rz.Resize(a.ctx, target, provider.Size{Cores: shape.Cores, MemoryMB: shape.MemoryMB, DiskGB: shape.DiskGB, Restart: true})
 	if err != nil {
 		return fmt.Errorf("change: %w", err)

@@ -23,22 +23,27 @@ var _ provider.Installer = (*session)(nil)
 
 // Media implements provider.Installer.
 func (s *session) Media(ctx context.Context, node, volume string) (provider.Media, error) {
+	content, kind := "iso", "ISO Images"
 	m := isoVolume.FindStringSubmatch(volume)
 	if m == nil {
-		return provider.Media{}, provider.Refused("proxmox: %q is not an ISO volume", volume)
+		m = importVolume.FindStringSubmatch(volume)
+		content, kind = "import", "Import"
+	}
+	if m == nil {
+		return provider.Media{}, provider.Refused("proxmox: %q is not an ISO volume nor a disk image in a storage's import content", volume)
 	}
 	if !nodeName.MatchString(node) {
 		return provider.Media{}, provider.Refused("proxmox: %q is not a node name", node)
 	}
-	var content []struct {
+	var listed []struct {
 		VolID string `json:"volid"`
 		Size  int64  `json:"size"`
 		CTime int64  `json:"ctime"`
 	}
-	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/storage/%s/content?content=iso", node, m[1]), &content); err != nil {
+	if err := s.c.Get(ctx, fmt.Sprintf("/nodes/%s/storage/%s/content?content=%s", node, m[1], content), &listed); err != nil {
 		return provider.Media{}, fmt.Errorf("proxmox: list %s on %s to find %s: %w", m[1], node, volume, err)
 	}
-	for _, c := range content {
+	for _, c := range listed {
 		if c.VolID == volume {
 			out := provider.Media{Volume: volume, Size: c.Size}
 			if c.CTime > 0 {
@@ -47,7 +52,7 @@ func (s *session) Media(ctx context.Context, node, volume string) (provider.Medi
 			return out, nil
 		}
 	}
-	return provider.Media{}, provider.Refused("proxmox: %s is not on %s's storage %s; upload it first (Datacenter → %s → %s → ISO Images)", volume, node, m[1], node, m[1])
+	return provider.Media{}, provider.Refused("proxmox: %s is not on %s's storage %s; upload it first (Datacenter → %s → %s → %s)", volume, node, m[1], node, m[1], kind)
 }
 
 // Create implements provider.Installer.
@@ -59,10 +64,12 @@ func (s *session) Create(ctx context.Context, req provider.CreateRequest) (provi
 		return provider.Machine{}, provider.Refused("proxmox: a machine needs a name and an owner mark without surrounding spaces, so a retry can find its own work")
 	case !nodeName.MatchString(req.Placement):
 		return provider.Machine{}, provider.Refused("proxmox: create %q: %q is not a node name", req.Name, req.Placement)
-	case !storageName.MatchString(req.DiskStorage) || req.Shape.DiskGB <= 0:
+	case !storageName.MatchString(req.DiskStorage) || req.Shape.DiskGB <= 0 && req.Image == "":
 		return provider.Machine{}, provider.Refused("proxmox: create %q needs a disk storage and a disk size", req.Name)
-	case !isoVolume.MatchString(req.Installer):
+	case req.Image == "" && !isoVolume.MatchString(req.Installer):
 		return provider.Machine{}, provider.Refused("proxmox: create %q: %q is not an ISO volume", req.Name, req.Installer)
+	case req.Image != "" && (req.Installer != "" || !importVolume.MatchString(req.Image)):
+		return provider.Machine{}, provider.Refused("proxmox: create %q: %q is not a disk image in a storage's import content, or an installer is set too", req.Name, req.Image)
 	case req.Shape.CPU != "" && !cpuModel.MatchString(req.Shape.CPU):
 		return provider.Machine{}, provider.Refused("proxmox: cpu %q is not a model name", req.Shape.CPU)
 	case len(req.Shape.NICs) > 4:
@@ -126,6 +133,15 @@ func (s *session) Create(ctx context.Context, req provider.CreateRequest) (provi
 		return provider.Machine{}, fmt.Errorf("proxmox: vmid %s (%s) carries this build's name and mark but SMBIOS UUID %q, not the minted %s; it is left alone",
 			vmid, req.Name, cfg.uuid(), req.MintUUID)
 	}
+	// A disk copied from an image is the image's size; it is grown to the
+	// declared size here, so a retry grows it too and never shrinks it.
+	if req.Image != "" {
+		grown, err := s.growDisk(ctx, node, vmid, cfg, req.Shape.DiskGB)
+		if err != nil {
+			return provider.Machine{}, unknownAfter("proxmox: grow the disk of "+req.Name, err)
+		}
+		created = created || grown
+	}
 	return provider.Machine{
 		Ref:      refOf(node, vmid),
 		Identity: provider.Identity{SMBIOSUUID: strings.ToLower(req.MintUUID), HypervisorGuestID: vmid, MACs: []string{}, IPs: []string{}},
@@ -148,6 +164,15 @@ func (s *session) createGuest(ctx context.Context, req provider.CreateRequest, n
 		installDisk:    {fmt.Sprintf("%s:%d", req.DiskStorage, req.Shape.DiskGB)},
 		installerDrive: {req.Installer + ",media=cdrom"},
 		"boot":         {"order=" + installDisk + ";" + installerDrive},
+	}
+	if req.Image != "" {
+		// Size 0 with import-from: the new disk is a copy of the image.
+		form.Set(installDisk, fmt.Sprintf("%s:0,import-from=%s", req.DiskStorage, req.Image))
+		form.Set("boot", "order="+installDisk)
+		form.Del(installerDrive)
+		// Fedora CoreOS and most cloud images write their console to the
+		// first serial port as well as the screen.
+		form.Set("serial0", "socket")
 	}
 	if req.Shape.Cores > 0 {
 		form.Set("cores", strconv.Itoa(req.Shape.Cores))

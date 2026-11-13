@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -63,10 +64,16 @@ func (s *session) Create(_ context.Context, req provider.CreateRequest) (provide
 		return provider.Machine{}, provider.Refused("fake: create needs a name and an owner mark without surrounding spaces")
 	case f.find(provider.Ref{Kind: provider.KindHost, ID: req.Placement}) < 0:
 		return provider.Machine{}, provider.Refused("fake: create %q: no node %q", req.Name, req.Placement)
-	case req.DiskStorage == "" || req.Shape.DiskGB <= 0:
+	case req.DiskStorage == "" || req.Shape.DiskGB <= 0 && req.Image == "":
 		return provider.Machine{}, provider.Refused("fake: create %q needs a disk storage and a disk size", req.Name)
+	case (req.Image == "") == (req.Installer == ""):
+		return provider.Machine{}, provider.Refused("fake: create %q needs an installer image or a disk image, not both", req.Name)
 	}
-	if _, ok := f.ISOs[req.Installer]; !ok {
+	if req.Image != "" {
+		if _, ok := f.ISOs[req.Image]; !ok || !strings.Contains(req.Image, ":import/") {
+			return provider.Machine{}, provider.Refused("fake: create %q: no disk image %s", req.Name, req.Image)
+		}
+	} else if _, ok := f.ISOs[req.Installer]; !ok {
 		return provider.Machine{}, provider.Refused("fake: create %q: no installer image %s", req.Name, req.Installer)
 	}
 	ws := f.ws()
@@ -113,7 +120,9 @@ func (s *session) Create(_ context.Context, req provider.CreateRequest) (provide
 	shape(&r, req.Shape)
 	f.Estate = append(f.Estate, r)
 	ws.marks[r.Ref] = req.OwnerMark
-	ws.installer[r.Ref] = req.Installer
+	if req.Installer != "" {
+		ws.installer[r.Ref] = req.Installer
+	}
 	if f.loseCreate {
 		f.loseCreate = false
 		return provider.Machine{}, &provider.OutcomeUnknownError{Op: "fake: create " + req.Name, Err: errors.New("answer lost")}
@@ -175,4 +184,29 @@ func (s *session) RemoveMedia(_ context.Context, m provider.Target, answer provi
 	delete(ws.answer, m.Ref)
 	delete(ws.seeds, answer.Volume)
 	return applied, nil
+}
+
+var _ provider.ImageUploader = (*session)(nil)
+
+// UploadImage implements provider.ImageUploader: the image joins ISOs with
+// the size of what was read.
+func (s *session) UploadImage(_ context.Context, placement, volume string, body io.Reader) error {
+	n, err := io.Copy(io.Discard, body)
+	if err != nil {
+		return err
+	}
+	f := s.fake
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.find(provider.Ref{Kind: provider.KindHost, ID: placement}) < 0 {
+		return provider.Refused("fake: no node %q", placement)
+	}
+	if !strings.Contains(volume, ":import/") {
+		return provider.Refused("fake: %q is not a disk image volume", volume)
+	}
+	if _, ok := f.ISOs[volume]; ok {
+		return provider.Refused("fake: %s is already there; an image is never overwritten", volume)
+	}
+	f.ISOs[volume] = n
+	return nil
 }

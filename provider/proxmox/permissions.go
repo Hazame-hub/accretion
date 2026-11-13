@@ -59,6 +59,10 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 			addInstall(&b, r)
 			continue
 		}
+		if r.Image != nil {
+			addImage(&b, r)
+			continue
+		}
 		node, vmid := r.Clone.Placement, r.Clone.Template.ID
 		if n, v, ok := strings.Cut(vmid, "/qemu/"); ok {
 			node, vmid = n, v
@@ -176,6 +180,31 @@ func addInstall(b *grantBuilder, r provider.Recipe) {
 		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the installer ISO and boot it", false)
 	}
 	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each installed machine's answer disc", false)
+	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
+	for _, nic := range c.Shape.NICs {
+		if br := KVField(nic, "bridge"); br != "" {
+			b.add("/sdn/zones/localnetwork/"+br, privsBridge, fmt.Sprintf("attach the network card to %s (Proxmox VE 8 and 9)", br), false)
+		}
+	}
+}
+
+// addImage is what a build from a disk image needs: no template, the image
+// read from its storage's import content and copied to the disk storage
+// (Proxmox accepts Datastore.Audit or AllocateSpace on an import volume a new
+// disk is copied from), a serial port of type socket (VM.Config.HWType), and
+// the seed uploaded, attached and removed. The guest agent is not needed:
+// the first boot's power-off is what the build is accepted on.
+func addImage(b *grantBuilder, r provider.Recipe) {
+	c := r.Image.Create
+	b.add("/vms", privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
+	b.add("/storage/"+c.DiskStorage, privsDiskStorage, "copy each machine's disk from the image and grow it", false)
+	if m := importVolume.FindStringSubmatch(c.Image); m != nil {
+		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the disk image and copy it", false)
+		if r.Image.URL != "" {
+			b.add("/storage/"+m[1], []string{"Datastore.AllocateTemplate"}, "upload the disk image accrete fetches when the storage does not have it yet", false)
+		}
+	}
+	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's seed disc", false)
 	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
 	for _, nic := range c.Shape.NICs {
 		if br := KVField(nic, "bridge"); br != "" {

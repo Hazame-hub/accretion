@@ -1,0 +1,81 @@
+{
+  "ignition": {
+    "version": "3.4.0"
+  },
+  "passwd": {
+    "users": [
+      {
+        "name": "core",
+        "sshAuthorizedKeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbm9wZW5zc2gta2V5LXYxAAAAAA ops@laptop"
+        ]
+      },
+      {
+        "name": "ops",
+        "shell": "/bin/bash"
+      }
+    ]
+  },
+  "storage": {
+    "files": [
+      {
+        "path": "/etc/hostname",
+        "mode": 420,
+        "overwrite": true,
+        "contents": {
+          "source": "data:;base64,ZmNvcy0xCg=="
+        }
+      },
+      {
+        "path": "/etc/motd",
+        "mode": 420,
+        "overwrite": true,
+        "contents": {
+          "source": "data:;base64,bWFuYWdlZCBieSBhY2NyZXRlCg=="
+        },
+        "user": {
+          "name": "root"
+        },
+        "group": {
+          "name": "root"
+        }
+      },
+      {
+        "path": "/etc/sudoers.d/90-accrete-core",
+        "mode": 288,
+        "overwrite": true,
+        "contents": {
+          "source": "data:;base64,Y29yZSBBTEw9KEFMTCkgTk9QQVNTV0Q6IEFMTAo="
+        }
+      },
+      {
+        "path": "/var/lib/app/env",
+        "mode": 384,
+        "overwrite": true,
+        "contents": {
+          "source": "data:;base64,QT0xCg=="
+        },
+        "user": {
+          "name": "ops"
+        }
+      }
+    ],
+    "links": [
+      {
+        "path": "/etc/localtime",
+        "target": "../usr/share/zoneinfo/Europe/Rome",
+        "overwrite": true,
+        "hard": false
+      }
+    ]
+  },
+  "systemd": {
+    "units": [
+      {
+        "name": "accrete-first-boot.service",
+        "enabled": true,
+        "contents": "[Unit]\nDescription=accrete: end the first boot with a power-off, the sign that Ignition's config was applied\nConditionPathExists=!/var/lib/accrete/first-boot-done\nAfter=multi-user.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/mkdir -p /var/lib/accrete\nExecStart=/usr/bin/touch /var/lib/accrete/first-boot-done\nExecStart=/usr/bin/sync\nExecStart=/usr/bin/systemctl --no-block poweroff\n\n[Install]\nWantedBy=multi-user.target\n"
+      }
+    ]
+  }
+}
