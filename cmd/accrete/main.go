@@ -56,6 +56,9 @@ Usage:
   accrete verify --terraform-state PATH (-f env.yaml | --provider TYPE --endpoint URL --token-env VAR) [...]
   accrete import --from-terraform STATE --provider TYPE --endpoint URL --token-env VAR [...]
   accrete export (--terraform | --retire --terraform-state PATH) -f env.yaml [...]
+  accrete image fedora-coreos [--stream stable] [--storage local]
+  accrete bundle -f install.yaml [-o DIR]
+  accrete pxe    -f install.yaml [-o DIR]
 
 The manifest is apiVersion accretion/v1alpha1. Its spec.provider names the
 provider, its endpoint, and the file (token_file) or environment variable
@@ -79,6 +82,9 @@ permissions prints the role the token needs to apply the manifest, the
 paths to grant it on and how, and checks what the token has there now
 (GET requests only; --offline checks nothing).
 
+image fedora-coreos prints the inputs that pin image-proxmox-vm to the
+current Fedora CoreOS image; apply fetches and uploads it itself.
+
 init --from-cluster writes a manifest and a state for the machines the
 provider already runs, then plans them (accrete init -h).
 
@@ -90,6 +96,10 @@ import --from-terraform adopts machines Terraform owns and writes the
 removed blocks for Terraform to forget them (accrete import -h); export
 writes import blocks for Terraform to take machines over, then --retire
 drops accrete's records (accrete export -h). Neither edits a Terraform state.
+bundle and pxe read a NetworkInstall file, not an Environment manifest, and
+contact nothing. bundle writes one kickstart for many machines, each picking
+its own profile by UUID, serial or MAC. pxe writes an iPXE gate, that
+kickstart and a proxy-DHCP config for network installs (accrete pxe -h).
 
 Exit status: 0 done (or nothing to do), 1 the plan has errors, the run was
 declined, or a machine failed or was not done, 2 accrete could not plan or
@@ -114,6 +124,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) > 0 && args[0] == "verify" {
 		return runVerify(ctx, args[1:], stdin, stdout, stderr, getenv)
+	}
+	if len(args) > 0 && args[0] == "image" {
+		return runImage(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "bundle" {
+		return runBundle(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "pxe" {
+		return runPXE(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply" && args[0] != "destroy" && args[0] != "permissions") {
 		fmt.Fprint(stderr, usage)

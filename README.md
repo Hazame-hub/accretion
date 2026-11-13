@@ -126,14 +126,22 @@ It holds no endpoint and no credential.
 | `accrete verify --terraform-state PATH (-f env.yaml \| --provider T --endpoint URL --token-env V) [--select RE] [--terraform-power] [-o text\|json]` | Checks what a Terraform state records against what the provider reports, resource by resource, and lists the machines the state does not record. GET requests only; writes no state of either tool. Exit 1 when something differs or is unknown. |
 | `accrete import --from-terraform STATE --provider T --endpoint URL --token-env V [--select RE] [--template ID]` | Adopts the VMs a Terraform state records and writes `terraform-handover.tf` (removed blocks) for Terraform to forget them without destroying them. GET requests only. |
 | `accrete export --terraform -f env.yaml [--select RE]` / `accrete export --retire --terraform-state P -f env.yaml` | Writes import blocks for Terraform to take machines over; then retires accrete's records of those Terraform now records. |
+| `accrete image fedora-coreos [--stream stable\|testing\|next] [--storage S] [--arch A]` | Prints the `image`, `image_url` and `image_sha256` inputs pinning `image-proxmox-vm` to the stream's current Fedora CoreOS proxmoxve image. Asks Fedora's stream metadata only; changes nothing. |
+| `accrete bundle -f install.yaml [-o DIR]` | Writes one kickstart for every machine a NetworkInstall file declares; each machine picks its own profile when it boots. See [Network installs](#network-installs-and-shared-answer-files). |
+| `accrete pxe -f install.yaml [-o DIR]` | Writes an iPXE gate, the kickstart for the armed machines and a proxy-DHCP config. Contacts nothing. |
 | `accrete permissions -f env.yaml [-o text\|json] [--offline] [--role NAME]` | Prints the one role the token needs to apply this manifest (template, machines, disk and seed storages, node, bridge), the paths to grant it on and how, and what the token lacks on each now. GET requests only. Exit 1 when a required privilege is missing, 3 when a path could not be checked. |
 
 Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
 apply and destroy): how long the whole command may run.
 
 **What apply does with each plan line:**
-- **create:** clone the template, seed cloud-init, start the machine, confirm it, record it.
-  With more than one card or a fixed address, the seed's network config
+- **create:** clone the template, seed cloud-init, start the machine, confirm it, record it. For
+  `install-proxmox-vm`: create an empty machine, give it its answer disc, start the installer,
+  wait for its power-off, remove the discs, start it from its disk, accept it on its agent's
+  hostname, record it (see below). For `image-proxmox-vm`: create the machine with its disk
+  copied from a disk image, seed it, start it, wait for its first boot to power it off, start
+  it again, confirm it, record it (see below).
+  For a clone with more than one card or a fixed address, the seed's network config
   names each card by the MAC Proxmox gave it at clone time, so each card gets
   its own addressing whatever the guest calls its interfaces. Two machines
   declared with the same fixed address are a plan error.
@@ -237,6 +245,158 @@ instances would be identical is refused.
 | `nameservers` | none | Comma-separated, with a fixed address. |
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
 | `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
+
+### Install from an installer ISO: `install-proxmox-vm`
+
+A machine can also be installed from a vendor installer, unattended, with no
+keyboard: accrete creates an empty VM, attaches the installer on `ide2` and a
+small disc of the machine's own labelled `OEMDRV` on `ide3`, holding a
+kickstart rendered from the manifest. Anaconda reads that disc by itself, so
+nothing is ever typed at a boot menu. RHEL 9 (and its rebuilds) is the first
+supported installer.
+
+```yaml
+    - name: ks
+      blueprint: install-proxmox-vm
+      inputs:
+        pve_node: pve
+        hostname: db-{{instance.number}}
+        iso: local:iso/rhel-9.6-x86_64-dvd.iso
+        memory_mb: 3072
+        bootstrap:
+          users:
+            - name: ops
+              ssh_keys: ["ssh-ed25519 AAAA… ops@laptop"]
+              sudo: true
+```
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node` | `pve` | |
+| `hostname` | (required) | The VM's name and the hostname the kickstart sets. |
+| `iso` | (required) | The installer's volume. accrete never removes it. |
+| `iso_sha256` | none | Recorded as declared. accrete cannot hash a file on the node's storage, so it never says it checked it. |
+| `answer_format` | `kickstart` | The only format this release writes. |
+| `install_timeout_minutes` | 60 | How long one apply waits for the installer to power the machine off. |
+| `seed_storage` | `local` | Takes ISO content; holds the answer disc until the install is done. |
+| `disk_storage` | `local-lvm` | Where the empty disk is made. |
+| `disk_gb` | 32 | The only disk the kickstart partitions. |
+| `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | memory_mb is at least 1536. DHCP on the one card. |
+| `bootstrap` | none | `users`, `packages`, `timezone`, `files`. `run` is refused (its commands would run in the installer, not on the booted machine), and so is any `{{secret.…}}` (the disc is readable from storage). |
+
+The kickstart is fixed on purpose: text mode, DHCP, root locked, only the new
+disk partitioned, the minimal environment plus `qemu-guest-agent`, and
+`poweroff` at the end, never `reboot`.
+
+**The steps, each saved before the next:** create, answer, start-installer,
+installing, remove-media, boot, accept. A killed accrete is resumed by the
+next apply on the same machine; the installer carries on meanwhile.
+
+**Accepted only on evidence.** A power-off alone is not "installed". The
+machine is accepted once the installer powered it off, both discs were
+removed, it started from its own disk, and its guest agent reports the
+declared hostname on the VM with the minted SMBIOS UUID. Otherwise apply exits
+1, the record stays `unknown` and the machine is kept: run apply again to
+check again, or destroy to remove it. An install still running at the deadline
+is kept as it is, with its discs.
+
+**What is recorded:** the installer's volume, size and date as Proxmox lists
+them, the answer file's SHA-256, any declared ISO hash marked as declared, and
+the hostname the agent reported (`installs` in the state).
+
+**Permissions:** `accrete permissions` lists what an install needs. Unlike a
+clone, `VM.GuestAgent.Audit` on `/vms` is required (on Proxmox VE 8,
+`VM.Monitor`): the hostname it reads is what the install is accepted on.
+
+Sybil does not run this blueprint yet: a manifest that uses it is refused there
+by name ("not one this connector offers").
+
+### Build from a disk image, any OS: `image-proxmox-vm`
+
+Most operating systems publish a cloud image: a disk that boots straight
+into the installed system and reads its first-boot config from a small disc
+labelled `cidata`. accrete builds a machine from such an image with no
+template made by hand and no installer: the VM's disk is a copy of the image,
+grown to `disk_gb`, and its seed disc holds the config rendered from the
+manifest, in one of two formats:
+
+- `seed_format: ignition` for **Fedora CoreOS** (its `proxmoxve` image reads
+  an Ignition config from the `cidata` disc) and other Ignition systems;
+- `seed_format: cloud-init` (the default) for Debian, Ubuntu, Rocky, Alma,
+  Fedora Cloud and other cloud-init images.
+
+```yaml
+    - name: fcos
+      blueprint: image-proxmox-vm
+      inputs:
+        pve_node: pve
+        hostname: fcos-{{instance.number}}
+        image: local:import/fedora-coreos-44.20261023.3.1-proxmoxve.x86_64.qcow2
+        seed_format: ignition
+        disk_gb: 20
+        memory_mb: 4096
+        bootstrap:
+          users:
+            - name: core
+              ssh_keys: ["ssh-ed25519 AAAA… ops@laptop"]
+              sudo: true
+```
+
+**accrete fetches the image itself.** Give `image_url` and `image_sha256`:
+when the storage does not have `image` yet, apply downloads the file on the
+machine running accrete, checks its SHA-256 against the manifest before
+anything is sent, decompresses it (`.xz` or `.gz`) and uploads it as `image`.
+A file whose hash differs is never uploaded, and an image already there is
+never overwritten. For Fedora CoreOS, `accrete image fedora-coreos [--stream
+stable] [--storage local]` prints those inputs for the current release, read
+from Fedora's stream metadata. The one thing left to do in Proxmox, once, is to
+let the storage hold disk images (Proxmox VE 8.2 or later): Datacenter →
+Storage → `local` → Edit → Content → add **Import**. apply names it when it is
+missing. See `examples/fedora-coreos.yaml`.
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node` | `pve` | |
+| `hostname` | (required) | The VM's name and the hostname its seed sets. |
+| `image` | (required) | `storage:import/name.qcow2` (or `.raw`, `.vmdk`). accrete never removes it. |
+| `image_url` | none | Where to fetch the image from when the storage lacks it (`http` or `https`; `.xz` and `.gz` are decompressed). Needs `image_sha256`. |
+| `image_sha256` | none | With `image_url`: the SHA-256 of the file at that URL, checked on download. Without: recorded as declared, since accrete cannot hash a file on the node's storage. |
+| `seed_format` | `cloud-init` | `cloud-init` or `ignition`. |
+| `first_boot_timeout_minutes` | 15 | How long one apply waits for the first boot to power the machine off. |
+| `seed_storage` | `local` | Takes ISO content; holds the machine's seed disc. |
+| `disk_storage` | `local-lvm` | Where the copy of the image is made. |
+| `disk_gb` | 0 | The boot disk is grown to this; 0 keeps the image's size. Grows only. |
+| `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | DHCP on the one card. A serial port is added: these images log their console there too. |
+| `bootstrap` | none | `users`, `timezone`, `files` in both formats; `packages` and `run` with cloud-init only. With Ignition, packages are refused (an image-based OS installs none at first boot: run the software as a container, or layer it later with rpm-ostree), so are `run` (write a systemd unit with `files`) and files under `/usr` (read-only). Any `{{secret.…}}` is refused: the disc is readable from storage. |
+
+**The steps, each saved before the next:** create, guest-init,
+start-first-boot, first-boot, boot, confirm. A killed accrete is resumed by
+the next apply on the same machine.
+
+**Accepted on the guest's own sign, not on "it runs".** The seed ends the
+first boot with a power-off once its config has been applied: cloud-init's
+`power_state` at the end of its final stage, or, for Ignition, a one-shot
+unit (`accrete-first-boot.service`) that runs once the boot reached
+`multi-user.target`. A machine whose Ignition config failed stops in its
+emergency shell and never powers off, so it is not accepted: apply exits 1,
+the record stays `unknown` and the machine is kept. Once powered off, the
+machine is started again and accepted if it runs with its minted SMBIOS UUID
+and the declared cores and memory. Fedora CoreOS ships no guest agent, so
+nothing more is read from inside it; when an image has one, its hostname must
+be the declared one.
+
+**What is recorded:** the image's volume, size and date as Proxmox lists them,
+the seed's format and SHA-256, and the image hash: checked, with its URL, when
+this build fetched the image; otherwise marked as declared (`images` in the
+state).
+
+**Permissions:** no template and no guest agent. `Datastore.Audit` on the
+image's storage (to find and copy it), the disk storage, the seed storage,
+`/vms` (including `VM.Config.HWType` for the serial port), and
+`Datastore.AllocateTemplate` on the image's storage when accrete is to upload
+it. `accrete permissions` lists them.
+
+Sybil does not run this blueprint yet.
 
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
@@ -374,6 +534,39 @@ creating nothing. Then remove the resources from the accrete manifest and run
 `accrete export --retire --terraform-state <the new state> -f env.yaml`. It
 retires accrete's record of each machine that state now records, and keeps
 (and names) any that it does not record or that the manifest still declares.
+## Network installs and shared answer files
+
+`accrete pxe` and `accrete bundle` install machines from an installer, VMs or
+physical machines alike, without anyone choosing an entry in a BIOS, UEFI or
+boot menu. They read a `NetworkInstall` file (see
+[examples/network-install](examples/network-install)) and contact nothing.
+
+- **One answer file for many machines.** Each machine's `ks.cfg` profile is
+  selected when it boots, from its SMBIOS UUID, serial number or a MAC. A
+  machine that matches no profile, or two, stops in `%pre` before any disk is
+  partitioned. Profiles hold no secret: `{{secret.*}}` is refused, because
+  every machine that boots the medium can read every profile.
+- **`accrete bundle -f install.yaml`** writes that `ks.cfg` for every
+  declared machine. Put it on a disc or USB stick labelled `OEMDRV` beside
+  the installer.
+- **`accrete pxe -f install.yaml`** writes `gate.ipxe`, `ks.cfg` and
+  `dnsmasq-proxy.conf`. The proxy DHCP assigns no address, so your DHCP
+  server is not changed. The gate boots the installer only for machines with
+  `armed: true`, and sends every other machine back to its own disk. Serve
+  `gate.ipxe`, `ks.cfg` and the installer's `images/pxeboot` files under
+  `spec.server`, and run `dnsmasq -k -C dnsmasq-proxy.conf` on a machine on
+  `spec.subnet`. Once a machine is installed, set `armed: false` and run
+  `accrete pxe` again, so its next network boot goes to its disk.
+
+Proven on Proxmox on 2026-11-06 with RHEL 9.6: one VM that was not armed
+booted its own disk, and one armed VM installed over the network with no
+keyboard and then booted from its disk. Not yet tried on physical hardware.
+UEFI Secure Boot must be off for `ipxe.efi`. Prefer UUID or MAC selectors on
+Proxmox, which sets no SMBIOS serial by default.
+
+`provider/redfish` (BMC virtual media, one-time boot, power, guarded by the
+declared serial or UUID) is built and tested against the sushy-tools
+emulator only. No command uses it yet.
 
 ## What v0.1 does not do
 
@@ -384,8 +577,9 @@ apply refuses these before sending anything, and exits 1:
 - **Firewalls.** A resource that declares `firewall:` is refused.
 - **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
   accrete has no secret store.
-- **Other blueprints.** Only `provision-proxmox-vm` is built. Installer-ISO and
-  template-building blueprints are refused by name.
+- **Other blueprints.** Only `provision-proxmox-vm`, `install-proxmox-vm`
+  and `image-proxmox-vm` are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
+  the template-building blueprint are refused by name.
 
 Also not done in v0.1:
 

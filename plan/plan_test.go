@@ -392,3 +392,15 @@ func TestInputDriftDoesNotMaskTheAcceptanceVerdict(t *testing.T) {
 		t.Fatalf("rejected: entry = %+v", e)
 	}
 }
+
+// A blueprint the connector does not offer is refused by name, so an
+// embedder never launches one it cannot run (openspec accrete-installer-iso,
+// D2 and task 2.3: Sybil and accrete's own install blueprint).
+func TestABlueprintTheConnectorDoesNotOfferIsRefusedByName(t *testing.T) {
+	r := web(1)
+	r.Blueprint = "install-proxmox-vm"
+	p := Build(env(r), world())
+	if p.OK() || !strings.Contains(strings.Join(p.Errors, "\n"), `resource "web": blueprint "install-proxmox-vm" is not one this connector offers`) {
+		t.Fatalf("ok %v, errors %v", p.OK(), p.Errors)
+	}
+}

@@ -52,7 +52,17 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 
 	type tmpl struct{ node, vmid string }
 	templates := map[tmpl]bool{}
+	installs := false
 	for _, r := range recipes {
+		if r.Install != nil {
+			installs = true
+			addInstall(&b, r)
+			continue
+		}
+		if r.Image != nil {
+			addImage(&b, r)
+			continue
+		}
 		node, vmid := r.Clone.Placement, r.Clone.Template.ID
 		if n, v, ok := strings.Cut(vmid, "/qemu/"); ok {
 			node, vmid = n, v
@@ -104,7 +114,7 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 			b.add("/storage/"+st, privsDiskStorage, why, false)
 		}
 	}
-	if len(recipes) > 0 {
+	if len(recipes) > 0 && !installs {
 		b.add("/vms", privsGuestAgent, "optional: let plan show each machine's hostname and addresses from the guest agent (on Proxmox VE 8 the privilege is VM.Monitor)", true)
 		// Without it Proxmox lists the SDN as empty instead of refusing, so
 		// every plan warns that its listing is incomplete (seen on the lab
@@ -152,6 +162,55 @@ func Permissions(ctx context.Context, s provider.Session, role string, recipes [
 	}
 	out.Setup = setup(out)
 	return out
+}
+
+// addInstall is what an install from an ISO needs (openspec
+// accrete-installer-iso, task 6.1): no template, an empty disk made on the
+// disk storage, the installer read and attached from its storage (Proxmox
+// checks Datastore.Audit or AllocateSpace on an iso volume a VM uses), the
+// answer disc uploaded, attached and removed, and the guest agent read,
+// which is required here: the hostname it reports is what the install is
+// accepted on.
+func addInstall(b *grantBuilder, r provider.Recipe) {
+	c := r.Install.Create
+	b.add("/vms", privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
+	b.add("/vms", privsGuestAgent, "read the hostname an installed machine's guest agent reports, which its install is accepted on (on Proxmox VE 8 the privilege is VM.Monitor)", false)
+	b.add("/storage/"+c.DiskStorage, privsDiskStorage, "create each installed machine's empty disk", false)
+	if m := isoVolume.FindStringSubmatch(c.Installer); m != nil {
+		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the installer ISO and boot it", false)
+	}
+	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each installed machine's answer disc", false)
+	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
+	for _, nic := range c.Shape.NICs {
+		if br := KVField(nic, "bridge"); br != "" {
+			b.add("/sdn/zones/localnetwork/"+br, privsBridge, fmt.Sprintf("attach the network card to %s (Proxmox VE 8 and 9)", br), false)
+		}
+	}
+}
+
+// addImage is what a build from a disk image needs: no template, the image
+// read from its storage's import content and copied to the disk storage
+// (Proxmox accepts Datastore.Audit or AllocateSpace on an import volume a new
+// disk is copied from), a serial port of type socket (VM.Config.HWType), and
+// the seed uploaded, attached and removed. The guest agent is not needed:
+// the first boot's power-off is what the build is accepted on.
+func addImage(b *grantBuilder, r provider.Recipe) {
+	c := r.Image.Create
+	b.add("/vms", privsMachines, "create, configure, start, stop and delete the new machines (their VMIDs are only known at apply)", false)
+	b.add("/storage/"+c.DiskStorage, privsDiskStorage, "copy each machine's disk from the image and grow it", false)
+	if m := importVolume.FindStringSubmatch(c.Image); m != nil {
+		b.add("/storage/"+m[1], []string{"Datastore.Audit"}, "find the disk image and copy it", false)
+		if r.Image.URL != "" {
+			b.add("/storage/"+m[1], []string{"Datastore.AllocateTemplate"}, "upload the disk image accrete fetches when the storage does not have it yet", false)
+		}
+	}
+	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's seed disc", false)
+	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
+	for _, nic := range c.Shape.NICs {
+		if br := KVField(nic, "bridge"); br != "" {
+			b.add("/sdn/zones/localnetwork/"+br, privsBridge, fmt.Sprintf("attach the network card to %s (Proxmox VE 8 and 9)", br), false)
+		}
+	}
 }
 
 // templateStorages are the storages a template's disks and cloud-init drive

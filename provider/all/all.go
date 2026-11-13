@@ -58,7 +58,7 @@ type Terraform struct {
 }
 
 var drivers = map[string]Driver{
-	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.Blueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
+	"proxmox": {Provider: proxmox.New(), Blueprints: proxmox.AccreteBlueprints, CheckToken: proxmox.CheckToken, Explain: proxmox.Explain, Recipe: proxmox.Recipe,
 		Permissions: proxmox.Permissions,
 		Terraform: &Terraform{Types: proxmox.TerraformTypes, Claim: proxmox.FromTerraform, Observe: proxmox.ClaimFields, Key: proxmox.ClaimKey,
 			Import: proxmox.TerraformImport}},

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf16"
 )
@@ -35,6 +36,11 @@ const ISOSector = 2048
 // CidataLabel is the volume label cloud-init's NoCloud datasource looks for.
 const CidataLabel = "cidata"
 
+// OEMDRVLabel is the volume label Anaconda looks for at boot: a disc with
+// this label and a ks.cfg at its root is read as the kickstart, with no boot
+// option (proven by hand on RHEL 9.6, 2026-11-05).
+const OEMDRVLabel = "OEMDRV"
+
 type isoFile struct {
 	name  string // the Joliet name, as the guest sees it
 	short string // the ISO 9660 level 1 name, without ";1"
@@ -45,8 +51,17 @@ type isoFile struct {
 // BuildNoCloudISO returns a NoCloud seed holding files at its root. Names must
 // be unique; the ISO 9660 short names are derived and must not collide.
 func BuildNoCloudISO(files map[string][]byte, when time.Time) ([]byte, error) {
+	return BuildSeedISO(CidataLabel, files, when)
+}
+
+// BuildSeedISO is a small ISO labelled label holding files at its root: the
+// NoCloud seed (CidataLabel), or an installer's answer disc (OEMDRVLabel).
+func BuildSeedISO(label string, files map[string][]byte, when time.Time) ([]byte, error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("cidata: no files")
+	}
+	if label == "" || len(label) > 32 || strings.ToUpper(label) != label && label != CidataLabel {
+		return nil, fmt.Errorf("cidata: volume label %q is not 1 to 32 upper-case characters", label)
 	}
 	list := make([]*isoFile, 0, len(files))
 	seen := map[string]string{}
@@ -91,8 +106,8 @@ func BuildNoCloudISO(files map[string][]byte, when time.Time) ([]byte, error) {
 	img := make([]byte, int(total)*ISOSector)
 	put := func(lba uint32, b []byte) { copy(img[int(lba)*ISOSector:], b) }
 
-	put(pvdLBA, volumeDescriptor(1, total, rootLBA, pathL, pathM, when, false))
-	put(svdLBA, volumeDescriptor(2, total, jRootLBA, jPathL, jPathM, when, true))
+	put(pvdLBA, volumeDescriptor(1, label, total, rootLBA, pathL, pathM, when, false))
+	put(svdLBA, volumeDescriptor(2, label, total, jRootLBA, jPathL, jPathM, when, true))
 	put(termLBA, append([]byte{255}, []byte("CD001\x01")...))
 	put(pathL, pathTable(rootLBA, binary.LittleEndian))
 	put(pathM, pathTable(rootLBA, binary.BigEndian))
@@ -200,7 +215,7 @@ func pathTable(root uint32, order binary.ByteOrder) []byte {
 	return t
 }
 
-func volumeDescriptor(kind byte, total, root uint32, pathL, pathM uint32, when time.Time, joliet bool) []byte {
+func volumeDescriptor(kind byte, label string, total, root uint32, pathL, pathM uint32, when time.Time, joliet bool) []byte {
 	v := make([]byte, ISOSector)
 	v[0] = kind
 	copy(v[1:], "CD001")
@@ -220,7 +235,7 @@ func volumeDescriptor(kind byte, total, root uint32, pathL, pathM uint32, when t
 		copy(v[off:off+n], s)
 	}
 	text(8, 32, "")
-	text(40, 32, CidataLabel)
+	text(40, 32, label)
 	copy(v[80:], both32(total))
 	if joliet {
 		copy(v[88:], "%/E") // UCS-2 level 3
