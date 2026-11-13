@@ -68,7 +68,8 @@ func TestCloneIsBornWithItsIdentityShapeAndDisk(t *testing.T) {
 	g := pve.Guest(100)
 	for key, want := range map[string]string{
 		"smbios1": "uuid=" + mintA, "cores": "4", "memory": "4096", "cpu": "x86-64-v2-AES",
-		"net0": "virtio,bridge=vmbr1", "description": "accrete:run-a",
+		// Proxmox gives a card set without a MAC a new one.
+		"net0": "virtio=BC:24:11:01:00:64,bridge=vmbr1", "description": "accrete:run-a",
 		"scsi0": "local-lvm:vm-100-disk-0,size=20G",
 	} {
 		if got := fmt.Sprint(g.Config[key]); got != want {

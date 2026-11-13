@@ -108,6 +108,22 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 				refuse("%s: %v", name, err)
 				continue
 			}
+			if rec.Install != nil {
+				// The installer must be there before anything is made.
+				if _, err := a.writer.(provider.Installer).Media(a.ctx, rec.Install.Create.Placement, rec.Install.Create.Installer); err != nil {
+					refuse("%s: %v", name, err)
+					continue
+				}
+			}
+			if rec.Image != nil {
+				// So must the disk image, unless accrete is to fetch it.
+				_, err := a.writer.(provider.Installer).Media(a.ctx, rec.Image.Create.Placement, rec.Image.Create.Image)
+				var refused *provider.RefusedError
+				if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
+					refuse("%s: %v", name, err)
+					continue
+				}
+			}
 			steps = append(steps, step{"create " + name, func() error { return a.create(e, rec) }})
 		case e.Action == plan.ActionUnknown && e.RunID != nil:
 			i, ours := applying[*e.RunID]
@@ -120,6 +136,20 @@ func (a *applier) run(p plan.Plan, notes []string) int {
 			if err != nil {
 				refuse("%s: %v", name, err)
 				continue
+			}
+			if rec.Install != nil && e.Inputs != nil && e.Blueprint == a.state.Applying[i].Blueprint {
+				// How long this apply waits is the manifest's to say now, not
+				// the first apply's: a timeout found too short is raised by
+				// editing the manifest. The rest of the build stays as recorded.
+				if now, err := a.buildable(e.Blueprint, e.Inputs); err == nil && now.Install != nil {
+					rec.Install.Timeout = now.Install.Timeout
+				}
+			}
+			if rec.Image != nil && e.Inputs != nil && e.Blueprint == a.state.Applying[i].Blueprint {
+				// Likewise the first boot's deadline.
+				if now, err := a.buildable(e.Blueprint, e.Inputs); err == nil && now.Image != nil {
+					rec.Image.Timeout = now.Image.Timeout
+				}
 			}
 			resumed[*e.RunID] = true
 			id := *e.RunID
@@ -248,6 +278,24 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 	if err != nil {
 		return provider.Recipe{}, err
 	}
+	if rec.Install != nil {
+		if _, ok := a.writer.(provider.Installer); !ok {
+			return provider.Recipe{}, errors.New("the provider cannot install machines from installer media")
+		}
+		if _, err := kickstart(rec); err != nil {
+			return provider.Recipe{}, err
+		}
+		return rec, nil
+	}
+	if rec.Image != nil {
+		if _, ok := a.writer.(provider.Installer); !ok {
+			return provider.Recipe{}, errors.New("the provider cannot build machines from disk images")
+		}
+		if _, err := imageSeed(rec); err != nil {
+			return provider.Recipe{}, err
+		}
+		return rec, nil
+	}
 	if _, err := userData(rec); err != nil {
 		return provider.Recipe{}, err
 	}
@@ -296,7 +344,7 @@ func (a *applier) create(e plan.Entry, rec provider.Recipe) error {
 		MintedUUID:   uuid.NewString(),
 		OwnerMark:    "accrete:" + run.String(),
 		Name:         rec.Hostname,
-		Step:         stepClone,
+		Step:         firstStep(rec),
 	})
 	if err := a.save(); err != nil {
 		return err
@@ -304,7 +352,7 @@ func (a *applier) create(e plan.Entry, rec provider.Recipe) error {
 	return a.build(run, rec)
 }
 
-func (a *applier) record(run uuid.UUID) *Applying {
+func (a *applier) applying(run uuid.UUID) *Applying {
 	for i := range a.state.Applying {
 		if a.state.Applying[i].RunID == run {
 			return &a.state.Applying[i]
@@ -320,8 +368,14 @@ func (a *applier) target(r *Applying) provider.Target {
 // build runs a machine's steps from the one its record names, saving the
 // state after each.
 func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
+	if rec.Install != nil {
+		return a.install(run, rec)
+	}
+	if rec.Image != nil {
+		return a.fromImage(run, rec)
+	}
 	for {
-		r := a.record(run)
+		r := a.applying(run)
 		if r == nil {
 			return nil
 		}
@@ -345,10 +399,11 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("cloud-init: %w", err)
 			}
 			pl, err := a.writer.GuestInit(a.ctx, a.target(r), provider.Seed{
-				UserData:   []byte(ud),
-				MetaData:   []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", r.MintedUUID, rec.Hostname)),
-				Storage:    rec.SeedStorage,
-				InstanceID: r.MintedUUID,
+				UserData:      []byte(ud),
+				MetaData:      []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", r.MintedUUID, rec.Hostname)),
+				NetworkConfig: rec.NetworkConfig,
+				Storage:       rec.SeedStorage,
+				InstanceID:    r.MintedUUID,
 			})
 			if err != nil {
 				return fmt.Errorf("cloud-init seed: %w", err)
@@ -376,7 +431,7 @@ func (a *applier) build(run uuid.UUID, rec provider.Recipe) error {
 // is what the provider observes (the identity, running, the declared size),
 // not an agent's report: v0.1 enrols no agent.
 func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
-	r := a.record(run)
+	r := a.applying(run)
 	resources, err := a.session.Discover(a.ctx)
 	if err != nil && len(resources) == 0 {
 		return fmt.Errorf("confirm: read the provider: %w", err)
@@ -403,7 +458,24 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 	if want := rec.Clone.Shape.MemoryMB; want > 0 && found.Facts.RAMBytes != int64(want)<<20 {
 		wrong = append(wrong, fmt.Sprintf("it has %d MiB of memory, not %d", found.Facts.RAMBytes>>20, want))
 	}
+	return a.record(run, wrong, "confirmed and recorded: running, as declared")
+}
 
+// shapeOf is the size a recipe declares, however the machine is built.
+func shapeOf(rec provider.Recipe) provider.Shape {
+	switch {
+	case rec.Install != nil:
+		return rec.Install.Create.Shape
+	case rec.Image != nil:
+		return rec.Image.Create.Shape
+	}
+	return rec.Clone.Shape
+}
+
+// record turns a built machine's record into a realization, accepted unless
+// wrong says why not, and drops it from what is being applied.
+func (a *applier) record(run uuid.UUID, wrong []string, accepted string) error {
+	r := a.applying(run)
 	asset, id := uuid.New(), uuid.New()
 	runbook := ""
 	for _, bp := range a.blueprints {
@@ -430,6 +502,18 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 		a.state.Groups[g] = append(a.state.Groups[g], asset)
 	}
 	a.state.Verdicts[asset] = verdict
+	if r.Install != nil {
+		if a.state.Installs == nil {
+			a.state.Installs = map[uuid.UUID]InstallRecord{}
+		}
+		a.state.Installs[id] = *r.Install
+	}
+	if r.Image != nil {
+		if a.state.Images == nil {
+			a.state.Images = map[uuid.UUID]ImageRecord{}
+		}
+		a.state.Images[id] = *r.Image
+	}
 	a.dropApplying(run)
 	if err := a.save(); err != nil {
 		return err
@@ -437,7 +521,7 @@ func (a *applier) confirmBuilt(run uuid.UUID, rec provider.Recipe) error {
 	if len(wrong) > 0 {
 		return fmt.Errorf("confirm: %s is built and recorded, but rejected: %s", r.ResourceRefID, strings.Join(wrong, "; "))
 	}
-	a.printf("  confirmed and recorded: running, as declared\n")
+	a.printf("  %s\n", accepted)
 	return nil
 }
 
@@ -544,7 +628,7 @@ func (a *applier) resize(rz provider.Resizer, e plan.Entry, rec provider.Recipe)
 		return err
 	}
 	target := provider.Target{Ref: provider.Ref{Kind: provider.KindVM, ID: r.ResourceRefID}, ExpectUUID: r.MintedUUID, Name: e.BuiltName}
-	shape := rec.Clone.Shape
+	shape := shapeOf(rec)
 	res, err := rz.Resize(a.ctx, target, provider.Size{Cores: shape.Cores, MemoryMB: shape.MemoryMB, DiskGB: shape.DiskGB, Restart: true})
 	if err != nil {
 		return fmt.Errorf("change: %w", err)
@@ -605,12 +689,15 @@ func (a *applier) resize(rz provider.Resizer, e plan.Entry, rec provider.Recipe)
 // the mark but not yet the identity is left for apply to finish: deleting
 // it would mean trusting a name.
 func (a *applier) abandon(run uuid.UUID) error {
-	r := a.record(run)
+	r := a.applying(run)
 	resources, err := a.session.Discover(a.ctx)
-	if err != nil && (len(resources) == 0 || r.ResourceRefID != "") {
-		// A partial listing proves nothing about a guest it does not list.
+	if err != nil && len(resources) == 0 {
 		return fmt.Errorf("read the provider: %w", err)
 	}
+	// A partial listing (the SDN unreadable, say) proves nothing about a
+	// guest it does not list, so it only ever lets a guest it does list,
+	// carrying the minted identity, be removed.
+	listErr := err
 	if r.ResourceRefID == "" {
 		// The clone never answered: it may have been made, and may still be
 		// copying, while the provider lists it with no identity yet (a clone
@@ -643,6 +730,8 @@ func (a *applier) abandon(run uuid.UUID) error {
 		}
 	}
 	switch {
+	case found == nil && listErr != nil && r.ResourceRefID != "":
+		return fmt.Errorf("read the provider: %w", listErr)
 	case found != nil:
 		var seeds []provider.Placement
 		if rec, err := a.recipe(r.Blueprint, r.IntentInputs); err == nil && rec.Seed != nil {

@@ -52,10 +52,16 @@ type Fake struct {
 	// can assert a credential arrived resolved and was not echoed anywhere.
 	LastConfig provider.Config
 
+	// ISOs is the installer images and disk images the estate keeps,
+	// volume to size in bytes, as Installer.Media lists them. A volume with
+	// "import/" in it is a disk image Create copies a disk from.
+	ISOs map[string]int64
+
 	// write is the write half's state (writer.go); interruptClone is set by
-	// InterruptNextClone.
+	// InterruptNextClone, loseCreate by LoseNextCreateAnswer.
 	write          *writeState
 	interruptClone bool
+	loseCreate     bool
 }
 
 // New returns a Fake with a small, plausible estate: one host, two VMs with
@@ -88,6 +94,7 @@ func New() *Fake {
 				State: "stopped", Tags: []string{}, Identity: provider.Identity{MACs: []string{}, IPs: []string{}},
 				Raw: []byte(`{"vmid":9000,"template":1}`)},
 		},
+		ISOs: map[string]int64{"local:iso/installer.iso": 4 << 30},
 	}
 }
 

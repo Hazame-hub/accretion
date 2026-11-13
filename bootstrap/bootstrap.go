@@ -171,6 +171,11 @@ type Base struct {
 	Packages []string
 	// Commands run first, in order: Sybil's enrollment.
 	Commands [][]string
+	// PowerOffWhenDone ends the first boot with a power-off once cloud-init
+	// has finished: the guest's own sign, readable from the hypervisor with
+	// no agent, that its config was applied. A machine built from a disk
+	// image is accepted on it.
+	PowerOffWhenDone bool
 }
 
 // Render writes the cloud-config for base plus the profile (nil: none).
@@ -246,6 +251,10 @@ func Render(base Base, p *Profile) (string, error) {
 	}
 	if len(runcmd) > 0 {
 		doc["runcmd"] = runcmd
+	}
+	if base.PowerOffWhenDone {
+		doc["power_state"] = map[string]any{"mode": "poweroff", "condition": true, "delay": "now",
+			"message": "accrete: first boot done, powering off"}
 	}
 	var b bytes.Buffer
 	b.WriteString("#cloud-config\n")
