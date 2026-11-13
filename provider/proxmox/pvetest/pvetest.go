@@ -15,6 +15,7 @@
 package pvetest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,16 @@ type Guest struct {
 	Pending map[string]any
 	// cloning counts the reads that still see the guest being cloned.
 	cloning int
+	// installing counts the status reads left before a simulated install
+	// powers the guest off; -1 is an install that never ends.
+	installing int
+	// Installed is set once a simulated install finished: the disk boots,
+	// and the guest agent answers with InstalledHostname while it runs.
+	Installed         bool
+	InstalledHostname string
+	// AgentHostname, when set, is what the guest agent of a running guest
+	// answers, installed or not.
+	AgentHostname string
 }
 
 // applyPending is a start: the guest takes its pending config.
@@ -113,6 +124,11 @@ type Server struct {
 	// GET /access/permissions?path= answers it. Nil keeps the default answer
 	// (SDN.Audit on /sdn).
 	Privileges map[string][]string
+	// InstallReads is how many status reads a simulated install runs for
+	// before it powers the guest off: started with an empty disk, an ISO on
+	// ide2 and an OEMDRV disc holding ks.cfg on ide3, a guest installs the
+	// hostname its kickstart names. 0 is 2 reads; -1 never ends.
+	InstallReads int
 	// Tasks is the node's task log, oldest first, as GET /nodes/pve1/tasks
 	// lists it. The server's own mutations add nothing to it: a test writes
 	// the entries a change made by somebody would have left.
@@ -365,6 +381,38 @@ func (s *Server) serveLocked(w http.ResponseWriter, r *http.Request) (delay time
 	switch {
 	case r.Method == http.MethodGet && p == "/nodes":
 		data([]map[string]any{{"node": "pve1", "status": "online", "maxmem": 34359738368, "maxcpu": 16, "mem": 8589934592}})
+	case r.Method == http.MethodPost && p == "/nodes/pve1/qemu":
+		id, err := strconv.Atoi(form.Get("vmid"))
+		if err != nil {
+			fail(http.StatusBadRequest, "pvetest: vmid")
+			return
+		}
+		if _, taken := s.Guests[id]; taken {
+			fail(http.StatusInternalServerError, fmt.Sprintf("unable to create VM %d - VM %d already exists on node 'pve1'", id, id))
+			return
+		}
+		cfg := map[string]any{}
+		for k := range form {
+			if k == "vmid" || k == "pool" {
+				continue
+			}
+			cfg[k] = form.Get(k)
+			if n, err := strconv.Atoi(form.Get(k)); err == nil && (k == "cores" || k == "memory") {
+				cfg[k] = n
+			}
+		}
+		// A new disk "storage:size" is allocated as Proxmox names it.
+		if line, ok := cfg["scsi0"].(string); ok {
+			if st, size, ok := strings.Cut(line, ":"); ok && !strings.Contains(size, "/") && !strings.Contains(size, "disk") {
+				cfg["scsi0"] = fmt.Sprintf("%s:vm-%d-disk-0,size=%sG", st, id, size)
+			}
+		}
+		if line, ok := cfg["net0"].(string); ok && !strings.Contains(strings.SplitN(line, ",", 2)[0], "=") {
+			model, rest, _ := strings.Cut(line, ",")
+			cfg["net0"] = fmt.Sprintf("%s=BC:24:11:01:%02X:%02X,%s", model, id/256, id%256, rest)
+		}
+		s.Guests[id] = &Guest{VMID: id, Kind: "qemu", Status: "stopped", Config: cfg}
+		task()
 	case r.Method == http.MethodGet && (p == "/nodes/pve1/qemu" || p == "/nodes/pve1/lxc"):
 		kind := strings.TrimPrefix(p, "/nodes/pve1/")
 		rows := []map[string]any{}
@@ -467,7 +515,7 @@ func (s *Server) storage(method string, m []string, form url.Values, data func(a
 		sort.Strings(names)
 		for _, v := range names {
 			if strings.HasPrefix(v, store+":") {
-				rows = append(rows, map[string]any{"volid": v, "content": "iso", "size": len(s.Files[v])})
+				rows = append(rows, map[string]any{"volid": v, "content": "iso", "size": len(s.Files[v]), "ctime": FileCTime})
 			}
 		}
 		data(rows)
@@ -517,9 +565,30 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 		}
 		data(cfg)
 	case r.Method == http.MethodGet && rest == "/status/current":
+		if g.installing > 0 {
+			g.installing--
+			if g.installing == 0 {
+				g.Status, g.Installed = "stopped", true
+			}
+		}
 		data(map[string]any{"status": statusOf(g), "qmpstatus": g.Status, "maxmem": memBytes(g)})
 	case r.Method == http.MethodGet && strings.HasPrefix(rest, "/agent/"):
-		fail(http.StatusInternalServerError, "QEMU guest agent is not running")
+		host := g.AgentHostname
+		if host == "" && g.Installed {
+			host = g.InstalledHostname
+		}
+		if g.Status != "running" || host == "" || g.installing != 0 {
+			fail(http.StatusInternalServerError, "QEMU guest agent is not running")
+			return
+		}
+		switch strings.TrimPrefix(rest, "/agent/") {
+		case "get-host-name":
+			data(map[string]any{"result": map[string]any{"host-name": host}})
+		case "network-get-interfaces":
+			data(map[string]any{"result": []any{}})
+		default:
+			fail(http.StatusNotImplemented, "pvetest: agent "+rest+" is not simulated")
+		}
 	case r.Method == http.MethodPost && rest == "/clone":
 		if !g.Template {
 			fail(http.StatusBadRequest, "pvetest: clone of a non-template")
@@ -585,6 +654,7 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 			}
 			g.applyPending()
 			g.Status = "running"
+			s.startInstall(g)
 		case "reboot":
 			if g.Status != "running" {
 				fail(http.StatusInternalServerError, "VM is not running")
@@ -592,7 +662,8 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 			}
 			g.applyPending()
 		case "stop", "shutdown":
-			g.Status = "stopped"
+			// A stop during an install cuts it short: the disk does not boot.
+			g.Status, g.installing = "stopped", 0
 		default:
 			fail(http.StatusNotImplemented, "pvetest: status/"+op+" is not simulated")
 			return
@@ -607,6 +678,69 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 		task()
 	default:
 		fail(http.StatusNotImplemented, "pvetest: "+r.Method+" "+rest+" is not simulated")
+	}
+}
+
+// FileCTime is the date every volume on a storage is listed with.
+const FileCTime = 1762300000
+
+// startInstall starts a simulated install on a guest started with an empty
+// disk, the installer on ide2 and its answer disc on ide3. The hostname is
+// the one the kickstart on the disc names.
+func (s *Server) startInstall(g *Guest) {
+	if g.Installed || g.installing != 0 {
+		return
+	}
+	vol := func(key string) string {
+		line, _ := g.Config[key].(string)
+		v, _, _ := strings.Cut(line, ",")
+		return v
+	}
+	iso, answer := vol("ide2"), s.Files[vol("ide3")]
+	if _, ok := s.Files[iso]; !ok || !bytes.Contains(answer, []byte("OEMDRV")) {
+		return
+	}
+	m := regexp.MustCompile(`--hostname=([A-Za-z0-9-]+)`).FindSubmatch(answer)
+	if m == nil {
+		return
+	}
+	g.InstalledHostname = string(m[1])
+	switch {
+	case s.InstallReads < 0:
+		g.installing = -1
+	case s.InstallReads == 0:
+		g.installing = 2
+	default:
+		g.installing = s.InstallReads
+	}
+}
+
+// CutInstall stops a guest mid-install, as an operator's Stop would: the
+// install never finished, so its disk does not boot.
+func (s *Server) CutInstall(vmid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g := s.Guests[vmid]; g != nil {
+		g.installing, g.Status = 0, "stopped"
+	}
+}
+
+// SetAgentHostname makes the guest agent of a running guest answer host.
+func (s *Server) SetAgentHostname(vmid int, host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g := s.Guests[vmid]; g != nil {
+		g.AgentHostname = host
+	}
+}
+
+// FinishInstall ends a guest's simulated install now, as the installer's
+// poweroff would.
+func (s *Server) FinishInstall(vmid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g := s.Guests[vmid]; g != nil && g.installing != 0 {
+		g.installing, g.Status, g.Installed = 0, "stopped", true
 	}
 }
 

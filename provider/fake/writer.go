@@ -20,11 +20,16 @@ type writeState struct {
 	marks    map[provider.Ref]string
 	seeds    map[string]bool
 	attached map[provider.Ref]string
+	// installer and answer are the discs in a created machine's two CD
+	// drives (installer.go).
+	installer map[provider.Ref]string
+	answer    map[provider.Ref]string
 }
 
 func (f *Fake) ws() *writeState {
 	if f.write == nil {
-		f.write = &writeState{marks: map[provider.Ref]string{}, seeds: map[string]bool{}, attached: map[provider.Ref]string{}}
+		f.write = &writeState{marks: map[provider.Ref]string{}, seeds: map[string]bool{}, attached: map[provider.Ref]string{},
+			installer: map[provider.Ref]string{}, answer: map[provider.Ref]string{}}
 	}
 	return f.write
 }
@@ -277,6 +282,8 @@ func (s *session) Delete(_ context.Context, m provider.Target, opts provider.Del
 		f.Estate = append(f.Estate[:i], f.Estate[i+1:]...)
 		delete(ws.marks, m.Ref)
 		delete(ws.attached, m.Ref)
+		delete(ws.installer, m.Ref)
+		delete(ws.answer, m.Ref)
 	}
 	for _, p := range opts.RemovePlacements {
 		delete(ws.seeds, p.Volume)

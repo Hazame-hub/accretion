@@ -131,7 +131,10 @@ Every command also takes `--timeout` (default 2 minutes for plan, 1 hour for
 apply and destroy): how long the whole command may run.
 
 **What apply does with each plan line:**
-- **create:** clone the template, seed cloud-init, start the machine, confirm it, record it.
+- **create:** clone the template, seed cloud-init, start the machine, confirm it, record it. For
+  `install-proxmox-vm`: create an empty machine, give it its answer disc, start the installer,
+  wait for its power-off, remove the discs, start it from its disk, accept it on its agent's
+  hostname, record it (see below).
 - **delete** (a machine the manifest no longer declares): stop it, delete it, remove its seed, retire its record.
 - **change** that is a power difference: power the machine on or off.
 - **change** of cores, memory or disk size (the manifest changed, or the
@@ -229,6 +232,71 @@ instances would be identical is refused.
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
 | `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
 
+### Install from an installer ISO: `install-proxmox-vm`
+
+A machine can also be installed from a vendor installer, unattended, with no
+keyboard: accrete creates an empty VM, attaches the installer on `ide2` and a
+small disc of the machine's own labelled `OEMDRV` on `ide3`, holding a
+kickstart rendered from the manifest. Anaconda reads that disc by itself, so
+nothing is ever typed at a boot menu. RHEL 9 (and its rebuilds) is the first
+supported installer.
+
+```yaml
+    - name: ks
+      blueprint: install-proxmox-vm
+      inputs:
+        pve_node: pve
+        hostname: db-{{instance.number}}
+        iso: local:iso/rhel-9.6-x86_64-dvd.iso
+        memory_mb: 3072
+        bootstrap:
+          users:
+            - name: ops
+              ssh_keys: ["ssh-ed25519 AAAA… ops@laptop"]
+              sudo: true
+```
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node` | `pve` | |
+| `hostname` | (required) | The VM's name and the hostname the kickstart sets. |
+| `iso` | (required) | The installer's volume. accrete never removes it. |
+| `iso_sha256` | none | Recorded as declared. accrete cannot hash a file on the node's storage, so it never says it checked it. |
+| `answer_format` | `kickstart` | The only format this release writes. |
+| `install_timeout_minutes` | 60 | How long one apply waits for the installer to power the machine off. |
+| `seed_storage` | `local` | Takes ISO content; holds the answer disc until the install is done. |
+| `disk_storage` | `local-lvm` | Where the empty disk is made. |
+| `disk_gb` | 32 | The only disk the kickstart partitions. |
+| `cores`, `memory_mb`, `cpu`, `net0` | 2, 2048, `x86-64-v2-AES`, `virtio,bridge=vmbr0` | memory_mb is at least 1536. DHCP on the one card. |
+| `bootstrap` | none | `users`, `packages`, `timezone`, `files`. `run` is refused (its commands would run in the installer, not on the booted machine), and so is any `{{secret.…}}` (the disc is readable from storage). |
+
+The kickstart is fixed on purpose: text mode, DHCP, root locked, only the new
+disk partitioned, the minimal environment plus `qemu-guest-agent`, and
+`poweroff` at the end, never `reboot`.
+
+**The steps, each saved before the next:** create, answer, start-installer,
+installing, remove-media, boot, accept. A killed accrete is resumed by the
+next apply on the same machine; the installer carries on meanwhile.
+
+**Accepted only on evidence.** A power-off alone is not "installed". The
+machine is accepted once the installer powered it off, both discs were
+removed, it started from its own disk, and its guest agent reports the
+declared hostname on the VM with the minted SMBIOS UUID. Otherwise apply exits
+1, the record stays `unknown` and the machine is kept: run apply again to
+check again, or destroy to remove it. An install still running at the deadline
+is kept as it is, with its discs.
+
+**What is recorded:** the installer's volume, size and date as Proxmox lists
+them, the answer file's SHA-256, any declared ISO hash marked as declared, and
+the hostname the agent reported (`installs` in the state).
+
+**Permissions:** `accrete permissions` lists what an install needs. Unlike a
+clone, `VM.GuestAgent.Audit` on `/vms` is required (on Proxmox VE 8,
+`VM.Monitor`): the hostname it reads is what the install is accepted on.
+
+Sybil does not run this blueprint yet: a manifest that uses it is refused there
+by name ("not one this connector offers").
+
 `plan` also understands `networks:`, `nics:`, `image:`, `placement:` and
 `firewall:`, as Sybil does. `apply` writes none of them in v0.1 (see below).
 
@@ -317,8 +385,9 @@ apply refuses these before sending anything, and exits 1:
   card. `ip_address*`, `gateway`, `nameservers` and `net1`..`net3` are refused.
 - **Secrets.** A bootstrap that references `{{secret.name}}` is refused.
   accrete has no secret store.
-- **Other blueprints.** Only `provision-proxmox-vm` is built. Installer-ISO and
-  template-building blueprints are refused by name.
+- **Other blueprints.** Only `provision-proxmox-vm` and `install-proxmox-vm`
+  are built. `provision-proxmox-iso-vm` (an installer with no answer file) and
+  the template-building blueprint are refused by name.
 
 Also not done in v0.1:
 
