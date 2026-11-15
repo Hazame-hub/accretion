@@ -63,7 +63,6 @@ const (
 	stepBakeSeedOff = "bake-seed-off"
 )
 
-
 // The steps of a build from a disk image that its others do not share.
 const (
 	stepStartFirstBoot = "start-first-boot"
