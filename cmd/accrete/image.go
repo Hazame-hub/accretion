@@ -63,13 +63,6 @@ const (
 	stepBakeSeedOff = "bake-seed-off"
 )
 
-// sealCommands end a template's bake: cloud-init's instance state, the
-// machine-id and the SSH host keys go, so each clone is a new instance with
-// its own identity and keys. An older cloud-init has no --machine-id.
-var sealCommands = [][]string{
-	{"sh", "-c", "cloud-init clean --logs --seed --machine-id || cloud-init clean --logs --seed"},
-	{"sh", "-c", "truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_*; sync"},
-}
 
 // The steps of a build from a disk image that its others do not share.
 const (
@@ -96,7 +89,7 @@ func imageSeed(rec provider.Recipe, fill filler) (string, error) {
 				base.Packages = []string{"qemu-guest-agent"}
 				base.FinalCommands = append(base.FinalCommands, []string{"systemctl", "enable", "qemu-guest-agent"})
 			}
-			base.FinalCommands = append(base.FinalCommands, sealCommands...)
+			base.FinalCommands = append(base.FinalCommands, bootstrap.TemplateSeal...)
 			return bootstrap.Render(base, profile)
 		}
 		return bootstrap.Render(bootstrap.Base{Hostname: rec.Hostname, PowerOffWhenDone: true}, profile)
