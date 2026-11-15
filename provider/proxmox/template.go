@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -114,6 +115,10 @@ func templateRecipe(inputs map[string]any, str func(string, string) string, num 
 	if KVField(nic, "bridge") == "" {
 		return provider.Recipe{}, fmt.Errorf("input net0: %q names no bridge", nic)
 	}
+	finish, err := templateFinish(str, disk)
+	if err != nil {
+		return provider.Recipe{}, err
+	}
 	image := store + ":import/" + file
 	if !importVolume.MatchString(image) {
 		return provider.Recipe{}, fmt.Errorf("inputs download_storage and image_filename: %q is not a disk image in a storage's import content", image)
@@ -125,9 +130,92 @@ func templateRecipe(inputs map[string]any, str func(string, string) string, num 
 				Shape: provider.Shape{Cores: cores, MemoryMB: memory, CPU: cpu, DiskGB: gb, NICs: []string{nic}}},
 			ImageSHA256: sum,
 			URL:         from,
-			Template:    &provider.TemplateFinish{CloudInitStorage: disk},
+			Template:    &finish,
 		},
 	}, nil
+}
+
+// What a template's hardware and cloud-init defaults may be written as.
+var (
+	templateMachine = regexp.MustCompile(`^(q35|pc|pc-(i440fx|q35)-[0-9]+\.[0-9]+(\+pve[0-9]+)?)$`)
+	templateTags    = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.+-]*(;[A-Za-z0-9_][A-Za-z0-9_.+-]*)*$`)
+	templateUser    = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	templateSSHKey  = regexp.MustCompile(`^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\x00-\x1f]*)?$`)
+	templateIPv4    = `(dhcp|[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}(,gw=[0-9]{1,3}(\.[0-9]{1,3}){3})?)`
+	templateIPv6    = `(dhcp|auto|[0-9A-Fa-f:]+/[0-9]{1,3}(,gw6=[0-9A-Fa-f:]+)?)`
+	templateIPConf  = regexp.MustCompile(`^(ip=` + templateIPv4 + `(,ip6=` + templateIPv6 + `)?|ip6=` + templateIPv6 + `)$`)
+	templateDomain  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}))*$`)
+)
+
+// templateFinish reads a template's hardware and cloud-init defaults.
+func templateFinish(str func(string, string) string, disk string) (provider.TemplateFinish, error) {
+	f := provider.TemplateFinish{
+		CloudInitStorage: disk,
+		BIOS:             str("bios", ""),
+		Machine:          str("machine", ""),
+		Tags:             str("tags", ""),
+		CloudInit: provider.CloudInitDefaults{
+			User: str("ciuser", ""), IPConfig0: str("ipconfig0", ""),
+			Nameserver: str("nameserver", ""), SearchDomain: str("searchdomain", ""),
+		},
+	}
+	for _, line := range strings.Split(str("sshkeys", ""), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			if !templateSSHKey.MatchString(line) {
+				return f, fmt.Errorf("input sshkeys: %.40q… is not an SSH public key line (ssh-ed25519 AAAA… comment)", line)
+			}
+			f.CloudInit.SSHKeys = append(f.CloudInit.SSHKeys, line)
+		}
+	}
+	for _, ns := range strings.Fields(f.CloudInit.Nameserver) {
+		if _, err := netip.ParseAddr(ns); err != nil {
+			return f, fmt.Errorf("input nameserver: %q is not an address", ns)
+		}
+	}
+	switch {
+	case f.BIOS != "" && f.BIOS != "seabios" && f.BIOS != "ovmf":
+		return f, fmt.Errorf("input bios: %q is neither seabios nor ovmf", f.BIOS)
+	case f.Machine != "" && !templateMachine.MatchString(f.Machine):
+		return f, fmt.Errorf("input machine: %q is not a machine type such as q35", f.Machine)
+	case f.Tags != "" && !templateTags.MatchString(f.Tags):
+		return f, fmt.Errorf("input tags: %q is not tags separated by semicolons", f.Tags)
+	case f.CloudInit.User != "" && !templateUser.MatchString(f.CloudInit.User):
+		return f, fmt.Errorf("input ciuser: %q is not a user name", f.CloudInit.User)
+	case f.CloudInit.IPConfig0 != "" && !templateIPConf.MatchString(f.CloudInit.IPConfig0):
+		return f, fmt.Errorf("input ipconfig0: %q is not ip=dhcp or ip=<address>/<prefix>[,gw=<address>]", f.CloudInit.IPConfig0)
+	case f.CloudInit.SearchDomain != "" && !templateDomain.MatchString(f.CloudInit.SearchDomain):
+		return f, fmt.Errorf("input searchdomain: %q is not a domain", f.CloudInit.SearchDomain)
+	}
+	return f, nil
+}
+
+// finishConfig is the config a template's finish writes, short of what the
+// guest already has.
+func finishConfig(cfg guestConfig, f provider.TemplateFinish) url.Values {
+	set := url.Values{}
+	want := func(k, v string) {
+		if v != "" && cfg.str(k) != v {
+			set.Set(k, v)
+		}
+	}
+	want("bios", f.BIOS)
+	want("machine", f.Machine)
+	want("tags", f.Tags)
+	want("ciuser", f.CloudInit.User)
+	want("ipconfig0", f.CloudInit.IPConfig0)
+	want("nameserver", f.CloudInit.Nameserver)
+	want("searchdomain", f.CloudInit.SearchDomain)
+	if len(f.CloudInit.SSHKeys) > 0 {
+		// Proxmox wants the value itself URL-encoded, with %20 for spaces.
+		keys := strings.ReplaceAll(url.QueryEscape(strings.Join(f.CloudInit.SSHKeys, "\n")), "+", "%20")
+		if cfg.str("sshkeys") != keys {
+			set.Set("sshkeys", keys)
+		}
+	}
+	if f.BIOS == "ovmf" && cfg.str("efidisk0") == "" {
+		set.Set("efidisk0", f.CloudInitStorage+":1,efitype=4m,pre-enrolled-keys=0")
+	}
+	return set
 }
 
 var _ provider.TemplateMaker = (*session)(nil)
@@ -169,7 +257,7 @@ func (s *session) MakeTemplate(ctx context.Context, m provider.Target, f provide
 	if st.Status != "stopped" {
 		return false, provider.Refused("proxmox: %s is %s; only a machine that never ran is made a template", m.Ref.ID, st.State())
 	}
-	set := url.Values{}
+	set := finishConfig(cfg, f)
 	if !hasDrive {
 		set.Set("ide2", f.CloudInitStorage+":cloudinit")
 	}

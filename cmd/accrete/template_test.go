@@ -173,3 +173,27 @@ func TestDestroyRemovesATemplateItBuilt(t *testing.T) {
 		t.Error("the image was removed with the template")
 	}
 }
+
+func TestApplyWritesTheTemplatesHardwareAndCloudInitDefaults(t *testing.T) {
+	l := newTemplateLab(t, "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+		"        bios: ovmf\n        machine: q35\n        tags: sybil-template;debian\n        ciuser: ops\n"+
+			"        sshkeys: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbm9w ops@laptop\n        ipconfig0: ip=dhcp\n        searchdomain: lab.example\n")
+	l.pve.Files[debianImage] = []byte("QFI\xfb already here")
+	out, code := l.accrete("", "apply", "--auto-approve")
+	if code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	g := l.pve.Guest(100)
+	for k, want := range map[string]string{
+		"bios": "ovmf", "machine": "q35", "tags": "sybil-template;debian", "ciuser": "ops", "ipconfig0": "ip=dhcp",
+		"searchdomain": "lab.example", "efidisk0": "local-lvm:1,efitype=4m,pre-enrolled-keys=0",
+		"sshkeys": "ssh-ed25519%20AAAAC3NzaC1lZDI1NTE5AAAAIGbm9w%20ops%40laptop",
+	} {
+		if got := fmt.Sprint(g.Config[k]); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if !g.Template {
+		t.Error("not a template")
+	}
+}

@@ -77,6 +77,27 @@ type TemplateFinish struct {
 	// CloudInitStorage is where the provider's own cloud-init drive is made:
 	// the drive a clone's first-boot config is written to.
 	CloudInitStorage string
+	// BIOS is "seabios" or "ovmf"; "" leaves the provider's default. ovmf
+	// gets an EFI vars disk on CloudInitStorage.
+	BIOS string
+	// Machine is the machine type ("q35"), "" for the provider's default.
+	Machine string
+	// Tags are the template's tags, ";"-separated, "" for none.
+	Tags string
+	// CloudInit is the provider's own cloud-init defaults, which a clone made
+	// by hand from the template uses: user, keys, addressing. A build that
+	// writes its own seed (Sybil's, accrete's) replaces them.
+	CloudInit CloudInitDefaults
+}
+
+// CloudInitDefaults are a template's own cloud-init settings. Empty fields
+// are left unset.
+type CloudInitDefaults struct {
+	User         string
+	SSHKeys      []string
+	IPConfig0    string
+	Nameserver   string
+	SearchDomain string
 }
 
 // InstallRecipe is how a machine is installed from installer media.

@@ -54,3 +54,40 @@ func TestTemplateRecipeRefusesBadInputs(t *testing.T) {
 		t.Errorf("defaults: %v %+v", err, rec.Image)
 	}
 }
+
+func TestTemplateRecipeReadsHardwareAndCloudInitDefaults(t *testing.T) {
+	rec, err := Recipe(TemplateBlueprint, map[string]any{
+		"template_name": "debian-12-cloud", "image_url": "https://example.invalid/debian.qcow2",
+		"bios": "ovmf", "machine": "q35", "tags": "sybil-template;debian",
+		"ciuser": "ops", "sshkeys": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbm9w ops@laptop\n\nssh-rsa AAAAB3NzaC1yc2E= other",
+		"ipconfig0": "ip=dhcp", "nameserver": "1.1.1.1 9.9.9.9", "searchdomain": "lab.example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := *rec.Image.Template
+	if f.BIOS != "ovmf" || f.Machine != "q35" || f.Tags != "sybil-template;debian" || f.CloudInit.User != "ops" ||
+		len(f.CloudInit.SSHKeys) != 2 || f.CloudInit.IPConfig0 != "ip=dhcp" || f.CloudInit.Nameserver != "1.1.1.1 9.9.9.9" ||
+		f.CloudInit.SearchDomain != "lab.example" {
+		t.Errorf("finish %+v", f)
+	}
+	set := finishConfig(guestConfig{}, f)
+	if set.Get("efidisk0") != "local-lvm:1,efitype=4m,pre-enrolled-keys=0" || !strings.Contains(set.Get("sshkeys"), "ssh-ed25519%20AAAA") ||
+		!strings.Contains(set.Get("sshkeys"), "%0A") {
+		t.Errorf("config %v", set)
+	}
+}
+
+func TestTemplateRecipeRefusesBadDefaults(t *testing.T) {
+	for key, val := range map[string]string{
+		"bios": "uefi", "machine": "virt", "tags": "a b", "ciuser": "Root!",
+		"sshkeys": "not a key", "ipconfig0": "dhcp", "nameserver": "dns.example", "searchdomain": "-bad",
+	} {
+		_, err := Recipe(TemplateBlueprint, map[string]any{
+			"template_name": "t", "image_url": "https://example.invalid/i.qcow2", key: val,
+		})
+		if err == nil || !strings.Contains(err.Error(), "input "+key) {
+			t.Errorf("%s=%q: %v", key, val, err)
+		}
+	}
+}

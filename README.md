@@ -409,6 +409,10 @@ See `examples/cloud-template.yaml`.
 | `disk_storage` | `local-lvm` | The template's disk and its cloud-init drive. |
 | `disk_size` | `20G` | Whole GiB; every clone starts at this size. Grows only. |
 | `cpu`, `cores`, `memory_mb`, `net0` | `x86-64-v2-AES`, 2, 2048, `virtio,bridge=vmbr0` | What clones inherit. |
+| `bios` | `seabios` | `seabios` or `ovmf` (UEFI; an EFI vars disk is added on `disk_storage`). |
+| `machine` | Proxmox's | `q35`, or empty for i440fx. |
+| `tags` | none (`sybil-template` in Sybil) | `;`-separated Proxmox tags. |
+| `ciuser`, `sshkeys`, `ipconfig0`, `nameserver`, `searchdomain` | none, `ipconfig0` `ip=dhcp` in Sybil | The template's own cloud-init defaults, used by a clone made by hand in Proxmox. A build that writes its own seed (Sybil's, accrete's) replaces them. `sshkeys`: one public key per line. |
 | `on_enrolment_failure` | `destroy` | Sybil's; ignored. |
 
 ### Build from a disk image, any OS: `image-proxmox-vm`
