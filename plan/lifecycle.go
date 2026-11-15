@@ -217,11 +217,22 @@ func decideDelete(e *Entry, r Realization, creator *Blueprint, world Snapshot) {
 // builtName is the name the machine was built with, for the guard that it
 // still carries it. Empty when none was recorded; the identity still holds.
 func builtName(r Realization, e *Entry) string {
-	if s, ok := r.IntentInputs["hostname"].(string); ok {
+	if s := BuiltNameInput(r.IntentInputs); s != "" {
 		return s
 	}
-	if s, ok := e.Inputs["hostname"].(string); ok && e.Action == ActionChange {
-		return s
+	if e.Action == ActionChange {
+		return BuiltNameInput(e.Inputs)
+	}
+	return ""
+}
+
+// BuiltNameInput is the name inputs give the guest a blueprint builds: its
+// hostname, or a template's template_name. Empty when they give none.
+func BuiltNameInput(inputs map[string]any) string {
+	for _, k := range []string{"hostname", "template_name"} {
+		if s, ok := inputs[k].(string); ok && s != "" {
+			return s
+		}
 	}
 	return ""
 }

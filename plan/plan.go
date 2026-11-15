@@ -581,7 +581,7 @@ func Build(env envmanifest.Environment, w World) Plan {
 			// second create would build another machine of the same name
 			// beside it, which every identity rule here then has to tell
 			// apart from the first.
-			if name, _ := entry.Inputs["hostname"].(string); name != "" {
+			if name := BuiltNameInput(entry.Inputs); name != "" {
 				if ref, taken := world.Unmanaged[name]; taken {
 					entry.Action = ActionUnknown
 					entry.Reason = fmt.Sprintf("a guest named %q is already on the provider (%s) and nothing built for an environment accounts for it; "+

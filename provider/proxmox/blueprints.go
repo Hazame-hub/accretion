@@ -242,6 +242,9 @@ func Blueprints() []plan.Blueprint {
 			Name:        "Build a bootable template from a cloud image (Proxmox)",
 			Description: "Download a distribution's cloud image onto the cluster, import it as a VM's boot disk, attach a cloud-init drive, and convert the result into the template a provisioning run clones. For a cluster with no templates yet — which is every Proxmox install until somebody makes one.",
 			Role:        "build_image",
+			// accrete removes a template it built; Sybil's own catalog
+			// keeps it out of reach of a manifest's removal.
+			DestroyedBy: "destroy-proxmox-vm",
 			Inputs: []plan.BlueprintInput{
 				{
 					Name:     "integration",
@@ -275,7 +278,7 @@ func Blueprints() []plan.Blueprint {
 					Required: true,
 					Default:  "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2",
 					Label:    "Cloud image URL",
-					Help:     "The node fetches this itself — nothing is proxied through Sybil, so the node has to reach it. It must be a cloud image, one with cloud-init and the QEMU guest agent already in it, not an installer ISO.",
+					Help:     "The node fetches this itself — nothing is proxied through Sybil, so the node has to reach it. accrete fetches it on the machine running accrete instead, and then needs image_sha256. It must be a cloud image, one with cloud-init in it, not an installer ISO. The QEMU guest agent need not be in it: the template never boots, and Sybil's enrolment installs it on each clone's first boot (with accrete, list qemu-guest-agent in the clone's bootstrap packages).",
 				},
 				{
 					Name:  "image_sha256",

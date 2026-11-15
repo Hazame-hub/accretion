@@ -718,9 +718,28 @@ func (s *Server) guest(r *http.Request, m []string, form url.Values, data func(a
 					v = fmt.Sprintf("%s=BC:24:11:%02X:%02X:%02X,%s", model, n+1, g.VMID/256, g.VMID%256, rest)
 				}
 			}
+			// As Proxmox does: "<storage>:cloudinit" makes the guest's
+			// cloud-init drive on that storage.
+			if store, ok := strings.CutSuffix(v, ":cloudinit"); ok {
+				v = fmt.Sprintf("%s:vm-%d-cloudinit,media=cdrom", store, g.VMID)
+			}
 			g.Config[k] = asSent(k, v)
 		}
 		data(nil)
+	case r.Method == http.MethodPost && rest == "/template":
+		if g.Status != "stopped" {
+			fail(http.StatusInternalServerError, "you can't convert a VM to template if VM is running")
+			return
+		}
+		g.Template = true
+		g.Config["template"] = 1
+		for k, v := range g.Config {
+			// Its disks become base volumes; the cloud-init drive keeps its name.
+			if line, ok := v.(string); ok && !strings.Contains(line, "cloudinit") {
+				g.Config[k] = strings.ReplaceAll(line, fmt.Sprintf("vm-%d-", g.VMID), fmt.Sprintf("base-%d-", g.VMID))
+			}
+		}
+		task()
 	case r.Method == http.MethodPut && rest == "/resize":
 		disk, size := form.Get("disk"), form.Get("size")
 		line := fmt.Sprint(g.Config[disk])

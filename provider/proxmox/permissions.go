@@ -254,7 +254,9 @@ func addImage(b *grantBuilder, r provider.Recipe) {
 			b.add("/storage/"+m[1], []string{"Datastore.AllocateTemplate"}, "upload the disk image accrete fetches when the storage does not have it yet", false)
 		}
 	}
-	b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's seed disc", false)
+	if r.Image.Template == nil {
+		b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's seed disc", false)
+	}
 	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)
 	for _, nic := range c.Shape.NICs {
 		if br := KVField(nic, "bridge"); br != "" {

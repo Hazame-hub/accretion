@@ -64,6 +64,19 @@ type ImageRecipe struct {
 	// provider does not have it yet. ImageSHA256 is then required. A URL
 	// ending in .xz or .gz is decompressed before upload.
 	URL string
+	// Template, when set, makes the machine a template instead of booting
+	// it: no seed is written and the machine never runs, so cloud-init in
+	// the image has claimed no instance yet and every clone runs it afresh.
+	// SeedFormat and Timeout are then unused.
+	Template *TemplateFinish
+}
+
+// TemplateFinish is what turns a machine whose disk is a copy of a cloud
+// image into a template its clones start from.
+type TemplateFinish struct {
+	// CloudInitStorage is where the provider's own cloud-init drive is made:
+	// the drive a clone's first-boot config is written to.
+	CloudInitStorage string
 }
 
 // InstallRecipe is how a machine is installed from installer media.

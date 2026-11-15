@@ -51,7 +51,13 @@ type ImageRecord struct {
 	ImageSHA256Fetched string `json:"image_sha256_fetched,omitempty"`
 	SeedFormat         string `json:"seed_format"`
 	SeedSHA256         string `json:"seed_sha256,omitempty"`
+	// Template is true for a template built from the image: it has no seed
+	// and never ran.
+	Template bool `json:"template,omitempty"`
 }
+
+// stepTemplate turns a machine created from a disk image into a template.
+const stepTemplate = "template"
 
 // The steps of a build from a disk image that its others do not share.
 const (
@@ -95,7 +101,8 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 			if err != nil {
 				return fmt.Errorf("image: %w", err)
 			}
-			r.Image = &ImageRecord{ImageVolume: media.Volume, ImageSize: media.Size, SeedFormat: rec.Image.SeedFormat, ImageURL: rec.Image.URL}
+			r.Image = &ImageRecord{ImageVolume: media.Volume, ImageSize: media.Size, SeedFormat: rec.Image.SeedFormat, ImageURL: rec.Image.URL,
+				Template: rec.Image.Template != nil}
 			if checked {
 				r.Image.ImageSHA256Fetched = rec.Image.ImageSHA256
 			} else {
@@ -111,10 +118,28 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("create: %w", err)
 			}
 			r.ResourceRefID, r.Step = m.Ref.ID, stepGuestInit
+			if rec.Image.Template != nil {
+				r.Step = stepTemplate
+			}
 			if m.Found {
 				a.printf("  found its earlier machine %s by its owner mark, SMBIOS UUID %s; not created again\n", m.Ref.ID, r.MintedUUID)
 			} else {
 				a.printf("  created as %s, SMBIOS UUID %s, its disk a copy of %s\n", m.Ref.ID, r.MintedUUID, media.Volume)
+			}
+		case stepTemplate:
+			tm, ok := a.writer.(provider.TemplateMaker)
+			if !ok || rec.Image.Template == nil {
+				return errors.New("template: the provider cannot make templates")
+			}
+			applied, err := tm.MakeTemplate(a.ctx, a.target(r), *rec.Image.Template)
+			if err != nil {
+				return fmt.Errorf("template: %w", err)
+			}
+			r.Step = stepConfirm
+			if applied {
+				a.printf("  given a cloud-init drive on %s and converted into a template; it never ran\n", rec.Image.Template.CloudInitStorage)
+			} else {
+				a.printf("  already a template with its cloud-init drive\n")
 			}
 		case stepGuestInit:
 			ud, err := imageSeed(rec, a.fillFor(true))
@@ -178,6 +203,9 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 			r.Step = stepConfirm
 			a.printf("  started again\n")
 		case stepConfirm:
+			if rec.Image.Template != nil {
+				return a.confirmTemplate(run, rec)
+			}
 			return a.confirmImage(run, rec)
 		default:
 			return fmt.Errorf("the state names step %q, which this accrete does not know for a build from a disk image", r.Step)
@@ -254,4 +282,40 @@ func (a *applier) confirmImage(run uuid.UUID, rec provider.Recipe) error {
 		a.printf("  built from %s\n", image)
 	}
 	return a.record(run, wrong, "confirmed and recorded: its first boot powered it off, and it runs again as declared")
+}
+
+// confirmTemplate accepts a template built from a disk image: the provider
+// lists it as a template carrying its minted identity, stopped, with the
+// declared size.
+func (a *applier) confirmTemplate(run uuid.UUID, rec provider.Recipe) error {
+	r := a.applying(run)
+	found, err := a.find(r)
+	if err != nil {
+		return fmt.Errorf("confirm: %w", err)
+	}
+	if found == nil {
+		return fmt.Errorf("confirm: the provider does not list %s", r.ResourceRefID)
+	}
+	var wrong []string
+	if found.Ref.Kind != provider.KindTemplate {
+		wrong = append(wrong, "the provider lists it as a "+string(found.Ref.Kind)+", not a template")
+	}
+	shape := rec.Image.Create.Shape
+	if want := shape.Cores; want > 0 && found.Facts.CPUCores != 0 && int(found.Facts.CPUCores) != want {
+		wrong = append(wrong, fmt.Sprintf("it has %d cores, not %d", found.Facts.CPUCores, want))
+	}
+	if want := shape.MemoryMB; want > 0 && found.Facts.RAMBytes != 0 && found.Facts.RAMBytes != int64(want)<<20 {
+		wrong = append(wrong, fmt.Sprintf("it has %d MiB of memory, not %d", found.Facts.RAMBytes>>20, want))
+	}
+	if r.Image != nil {
+		image := fmt.Sprintf("%s, %d bytes", r.Image.ImageVolume, r.Image.ImageSize)
+		if r.Image.ImageSHA256Declared != "" {
+			image += ", SHA-256 " + r.Image.ImageSHA256Declared + " as declared (not checked)"
+		}
+		if r.Image.ImageSHA256Fetched != "" {
+			image += ", fetched from " + r.Image.ImageURL + " with SHA-256 " + r.Image.ImageSHA256Fetched + " (checked on download)"
+		}
+		a.printf("  built from %s\n", image)
+	}
+	return a.record(run, wrong, "confirmed and recorded: a template, as declared, that clones can start from")
 }
