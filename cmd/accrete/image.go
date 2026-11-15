@@ -56,8 +56,20 @@ type ImageRecord struct {
 	Template bool `json:"template,omitempty"`
 }
 
-// stepTemplate turns a machine created from a disk image into a template.
-const stepTemplate = "template"
+// stepTemplate turns a machine created from a disk image into a template, and
+// stepBakeSeedOff takes a baked template's seed off once its one boot is over.
+const (
+	stepTemplate    = "template"
+	stepBakeSeedOff = "bake-seed-off"
+)
+
+// sealCommands end a template's bake: cloud-init's instance state, the
+// machine-id and the SSH host keys go, so each clone is a new instance with
+// its own identity and keys. An older cloud-init has no --machine-id.
+var sealCommands = [][]string{
+	{"sh", "-c", "cloud-init clean --logs --seed --machine-id || cloud-init clean --logs --seed"},
+	{"sh", "-c", "truncate -s 0 /etc/machine-id; rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_*; sync"},
+}
 
 // The steps of a build from a disk image that its others do not share.
 const (
@@ -78,6 +90,15 @@ func imageSeed(rec provider.Recipe, fill filler) (string, error) {
 	case provider.SeedIgnition:
 		return bootstrap.RenderIgnition(bootstrap.Base{Hostname: rec.Hostname}, profile)
 	case provider.SeedCloudInit:
+		if t := rec.Image.Template; t != nil && t.Bake != nil {
+			base := bootstrap.Base{Hostname: rec.Hostname, PowerOffWhenDone: true, Upgrade: t.Bake.Upgrade}
+			if t.Bake.GuestAgent {
+				base.Packages = []string{"qemu-guest-agent"}
+				base.FinalCommands = append(base.FinalCommands, []string{"systemctl", "enable", "qemu-guest-agent"})
+			}
+			base.FinalCommands = append(base.FinalCommands, sealCommands...)
+			return bootstrap.Render(base, profile)
+		}
 		return bootstrap.Render(bootstrap.Base{Hostname: rec.Hostname, PowerOffWhenDone: true}, profile)
 	}
 	return "", fmt.Errorf("seed format %q is not one accrete writes", rec.Image.SeedFormat)
@@ -118,7 +139,7 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 				return fmt.Errorf("create: %w", err)
 			}
 			r.ResourceRefID, r.Step = m.Ref.ID, stepGuestInit
-			if rec.Image.Template != nil {
+			if rec.Image.Template != nil && rec.Image.Template.Bake == nil {
 				r.Step = stepTemplate
 			}
 			if m.Found {
@@ -126,6 +147,17 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 			} else {
 				a.printf("  created as %s, SMBIOS UUID %s, its disk a copy of %s\n", m.Ref.ID, r.MintedUUID, media.Volume)
 			}
+		case stepBakeSeedOff:
+			sr, ok := a.writer.(provider.SeedRemover)
+			if !ok || rec.Seed == nil {
+				return errors.New("bake: the provider cannot take a seed off a machine")
+			}
+			pl := rec.Seed(r.MintedUUID)
+			if err := sr.RemoveSeed(a.ctx, a.target(r), pl); err != nil {
+				return fmt.Errorf("bake: take the seed off: %w", err)
+			}
+			r.Step = stepTemplate
+			a.printf("  baked and sealed; its seed %s is taken off and deleted\n", pl.Volume)
 		case stepTemplate:
 			tm, ok := a.writer.(provider.TemplateMaker)
 			if !ok || rec.Image.Template == nil {
@@ -185,6 +217,9 @@ func (a *applier) fromImage(run uuid.UUID, rec provider.Recipe) error {
 			r.Step = stepBoot
 			if hasSecrets(rec) {
 				r.Step = stepScrubSeed
+			}
+			if rec.Image.Template != nil {
+				r.Step = stepBakeSeedOff
 			}
 			a.printf("  its first boot applied its %s config and powered it off (this apply waited %s)\n", rec.Image.SeedFormat, roundDuration(time.Since(started)))
 		case stepScrubSeed:

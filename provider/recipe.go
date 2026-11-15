@@ -88,6 +88,21 @@ type TemplateFinish struct {
 	// by hand from the template uses: user, keys, addressing. A build that
 	// writes its own seed (Sybil's, accrete's) replaces them.
 	CloudInit CloudInitDefaults
+	// Bake, when set, boots the machine once before the conversion: the
+	// recipe's Bootstrap profile is applied by cloud-init from a seed on
+	// SeedStorage, then the guest seals itself (cloud-init's instance state,
+	// machine-id and SSH host keys removed, so each clone is a new instance)
+	// and powers off. The seed is taken off before the cloud-init drive goes
+	// on. ImageRecipe.Timeout bounds the wait.
+	Bake *Bake
+}
+
+// Bake is what a template's one boot installs before it is sealed.
+type Bake struct {
+	// GuestAgent installs and enables qemu-guest-agent.
+	GuestAgent bool
+	// Upgrade upgrades the image's packages first.
+	Upgrade bool
 }
 
 // CloudInitDefaults are a template's own cloud-init settings. Empty fields

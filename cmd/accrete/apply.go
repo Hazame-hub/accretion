@@ -435,11 +435,19 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot build machines from disk images")
 		}
-		if rec.Image.Template != nil {
+		if t := rec.Image.Template; t != nil {
 			if _, ok := a.writer.(provider.TemplateMaker); !ok {
 				return provider.Recipe{}, errors.New("the provider cannot make templates")
 			}
-			return rec, nil
+			if t.Bake == nil {
+				return rec, nil
+			}
+			if _, ok := a.writer.(provider.SeedRemover); !ok {
+				return provider.Recipe{}, errors.New("baking needs a provider that can take a seed off a machine")
+			}
+			if hasSecrets(rec) {
+				return provider.Recipe{}, errors.New("input bake: references a secret, and whatever is baked into a template is in every clone; put secrets in each clone's own bootstrap instead")
+			}
 		}
 		if _, err := imageSeed(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err

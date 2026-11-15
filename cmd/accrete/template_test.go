@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hazame-hub/accretion/plan"
 	"github.com/hazame-hub/accretion/provider/proxmox/pvetest"
@@ -195,5 +196,64 @@ func TestApplyWritesTheTemplatesHardwareAndCloudInitDefaults(t *testing.T) {
 	}
 	if !g.Template {
 		t.Error("not a template")
+	}
+}
+
+func TestApplyBakesATemplateOnceThenSealsAndConvertsIt(t *testing.T) {
+	l := newTemplateLab(t, "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+		"        bake_guest_agent: true\n        bake_upgrade: true\n        bake:\n          packages: [htop]\n"+
+			"          users:\n            - name: ops\n              ssh_keys: [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbm9wZW5zc2gta2V5LXYxAAAAAA ops@laptop\"]\n              sudo: true\n")
+	l.pve.Files[debianImage] = []byte("QFI\xfb already here")
+	poll := firstBootPoll
+	firstBootPoll = time.Millisecond
+	t.Cleanup(func() { firstBootPoll = poll })
+	var seed string
+	l.pve.OnUpload = func(vol string, body []byte) {
+		if strings.Contains(vol, "accrete-") {
+			seed = string(body)
+		}
+	}
+
+	out, code := l.accrete("", "apply", "--auto-approve")
+	if code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	mustContain(t, out, "seeded with local:iso/accrete-", "started for its first boot",
+		"its first boot applied its cloud-init config and powered it off", "baked and sealed; its seed local:iso/accrete-",
+		"converted into a template", "confirmed and recorded: a template")
+	for _, want := range []string{"qemu-guest-agent", "htop", "package_upgrade: true", "name: ops",
+		"cloud-init clean --logs --seed", "/etc/ssh/ssh_host_*", "power_state:"} {
+		if !strings.Contains(seed, want) {
+			t.Errorf("bake seed lacks %q", want)
+		}
+	}
+	if strings.Index(seed, "systemctl") > strings.Index(seed, "cloud-init clean") {
+		t.Error("the seal must run after everything else")
+	}
+	g := l.pve.Guest(100)
+	if !g.Template || g.Config["ide2"] != "local-lvm:vm-100-cloudinit,media=cdrom" {
+		t.Errorf("template %v, ide2 %v", g.Template, g.Config["ide2"])
+	}
+	for vol := range l.pve.Files {
+		if strings.Contains(vol, "accrete-") {
+			t.Errorf("bake seed %s left on storage", vol)
+		}
+	}
+	s := l.loadState()
+	if rec := s.Images[current(s)[0].ID]; !rec.Template || len(rec.SeedSHA256) != 64 {
+		t.Errorf("image record %+v", rec)
+	}
+}
+
+func TestApplyRefusesToBakeASecretIntoATemplate(t *testing.T) {
+	l := newTemplateLab(t, "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+		"        bake:\n          run: [\"echo {{secret.token}} > /etc/token\"]\n")
+	l.pve.Files[debianImage] = []byte("QFI\xfb already here")
+	out, code := l.accrete("", "apply", "--auto-approve")
+	if code == 0 || !strings.Contains(out, "is in every clone") {
+		t.Fatalf("apply: exit %d\n%s", code, out)
+	}
+	if len(l.pve.Writes()) != 0 {
+		t.Errorf("writes: %v", l.pve.Writes())
 	}
 }

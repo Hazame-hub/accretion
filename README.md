@@ -413,7 +413,20 @@ See `examples/cloud-template.yaml`.
 | `machine` | Proxmox's | `q35`, or empty for i440fx. |
 | `tags` | none (`sybil-template` in Sybil) | `;`-separated Proxmox tags. |
 | `ciuser`, `sshkeys`, `ipconfig0`, `nameserver`, `searchdomain` | none, `ipconfig0` `ip=dhcp` in Sybil | The template's own cloud-init defaults, used by a clone made by hand in Proxmox. A build that writes its own seed (Sybil's, accrete's) replaces them. `sshkeys`: one public key per line. |
+| `bake` | none | A bootstrap profile (users, packages, timezone, files, run) baked into the template: see below. No secrets. |
+| `bake_guest_agent` | false | Install and enable qemu-guest-agent while baking. |
+| `bake_upgrade` | false | Upgrade the image's packages while baking. |
+| `seed_storage` | `local` | Takes ISO content; holds the bake seed until the bake is over. |
+| `bake_timeout_minutes` | 30 | How long one apply waits for the bake boot to power the VM off. |
 | `on_enrolment_failure` | `destroy` | Sybil's; ignored. |
+
+**Baking.** With any of `bake`, `bake_guest_agent` or `bake_upgrade`, the VM
+boots once before it is converted, Packer-style: cloud-init applies the
+profile from a seed disc, then seals the guest (`cloud-init clean`, an empty
+machine-id, no SSH host keys, so each clone is a new instance with its own
+keys) and powers it off. accrete then takes the seed off, attaches the
+cloud-init drive and converts. A bake that never powers off is left as it is
+for a look at its console; run apply again to keep waiting.
 
 ### Build from a disk image, any OS: `image-proxmox-vm`
 

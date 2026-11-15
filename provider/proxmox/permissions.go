@@ -254,7 +254,7 @@ func addImage(b *grantBuilder, r provider.Recipe) {
 			b.add("/storage/"+m[1], []string{"Datastore.AllocateTemplate"}, "upload the disk image accrete fetches when the storage does not have it yet", false)
 		}
 	}
-	if r.Image.Template == nil {
+	if r.Image.Template == nil || r.Image.Template.Bake != nil {
 		b.add("/storage/"+r.SeedStorage, privsSeedStorage, "upload, attach and remove each machine's seed disc", false)
 	}
 	b.add("/nodes/"+c.Placement, privsNode, "read the node's capacity for the plan", false)

@@ -176,6 +176,11 @@ type Base struct {
 	// no agent, that its config was applied. A machine built from a disk
 	// image is accepted on it.
 	PowerOffWhenDone bool
+	// Upgrade upgrades every installed package before the others are
+	// installed: a template baked fresh.
+	Upgrade bool
+	// FinalCommands run last, after the profile's own: sealing a template.
+	FinalCommands [][]string
 }
 
 // Render writes the cloud-config for base plus the profile (nil: none).
@@ -246,8 +251,15 @@ func Render(base Base, p *Profile) (string, error) {
 			runcmd = append(runcmd, []string{"sh", "-c", c})
 		}
 	}
+	for _, c := range base.FinalCommands {
+		runcmd = append(runcmd, c)
+	}
 	if len(packages) > 0 {
 		doc["packages"] = packages
+	}
+	if base.Upgrade {
+		doc["package_update"] = true
+		doc["package_upgrade"] = true
 	}
 	if len(runcmd) > 0 {
 		doc["runcmd"] = runcmd

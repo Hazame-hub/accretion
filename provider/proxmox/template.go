@@ -119,11 +119,34 @@ func templateRecipe(inputs map[string]any, str func(string, string) string, num 
 	if err != nil {
 		return provider.Recipe{}, err
 	}
+	seed := str("seed_storage", "local")
+	agent, upgrade := str("bake_guest_agent", "false"), str("bake_upgrade", "false")
+	wait, err := num("bake_timeout_minutes", 30)
+	if err != nil {
+		return provider.Recipe{}, err
+	}
+	switch {
+	case agent != "true" && agent != "false":
+		return provider.Recipe{}, fmt.Errorf("input bake_guest_agent: %q is not true or false", agent)
+	case upgrade != "true" && upgrade != "false":
+		return provider.Recipe{}, fmt.Errorf("input bake_upgrade: %q is not true or false", upgrade)
+	case !storageName.MatchString(seed):
+		return provider.Recipe{}, fmt.Errorf("input seed_storage: %q is not a storage name", seed)
+	case wait < 1:
+		return provider.Recipe{}, fmt.Errorf("input bake_timeout_minutes: %d is below 1", wait)
+	}
+	bake := inputs["bake"]
+	if m, ok := bake.(map[string]any); ok && len(m) == 0 {
+		bake = nil
+	}
+	if bake != nil || agent == "true" || upgrade == "true" {
+		finish.Bake = &provider.Bake{GuestAgent: agent == "true", Upgrade: upgrade == "true"}
+	}
 	image := store + ":import/" + file
 	if !importVolume.MatchString(image) {
 		return provider.Recipe{}, fmt.Errorf("inputs download_storage and image_filename: %q is not a disk image in a storage's import content", image)
 	}
-	return provider.Recipe{
+	rec := provider.Recipe{
 		Hostname: name,
 		Image: &provider.ImageRecipe{
 			Create: provider.CreateRequest{Name: name, Placement: node, DiskStorage: disk, Image: image,
@@ -132,7 +155,18 @@ func templateRecipe(inputs map[string]any, str func(string, string) string, num 
 			URL:         from,
 			Template:    &finish,
 		},
-	}, nil
+	}
+	if finish.Bake != nil {
+		rec.Bootstrap = bake
+		rec.SeedStorage = seed
+		rec.Image.SeedFormat = provider.SeedCloudInit
+		rec.Image.Timeout = time.Duration(wait) * time.Minute
+		rec.Seed = func(instanceID string) provider.Placement {
+			_, volume := seedVolume(seed, instanceID)
+			return provider.Placement{Drive: "ide2", Volume: volume, Storage: seed, Node: node}
+		}
+	}
+	return rec, nil
 }
 
 // What a template's hardware and cloud-init defaults may be written as.
@@ -240,6 +274,10 @@ func (s *session) MakeTemplate(ctx context.Context, m provider.Target, f provide
 		return false, provider.Refused("proxmox: nothing at %s", m.Ref.ID)
 	}
 	ide2 := cfg.str("ide2")
+	if strings.HasPrefix(ide2, "none,") || ide2 == "none" {
+		// An empty CD drive, as a baked template's seed leaves it.
+		ide2 = ""
+	}
 	hasDrive := strings.Contains(ide2, "cloudinit")
 	if cfg.str("template") == "1" {
 		if !hasDrive {
