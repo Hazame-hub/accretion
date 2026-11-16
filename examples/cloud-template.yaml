@@ -1,0 +1,43 @@
+# A cloud-init template on Proxmox, built from Ubuntu 24.04's cloud image with
+# Sybil's own blueprint, so the same lines work in Sybil and here:
+#
+#   ACCRETE_PROXMOX_TOKEN='user@realm!tokenid=secret' \
+#     go run ./cmd/accrete plan  -f examples/cloud-template.yaml
+#     go run ./cmd/accrete apply -f examples/cloud-template.yaml
+#
+# apply fetches the image on this machine when the storage does not have it,
+# checks it against image_sha256 (Ubuntu lists it in SHA256SUMS next to the
+# image), uploads it, makes a VM whose disk is a copy of it, gives it a
+# cloud-init drive and converts it. The VM never boots, so each clone runs
+# cloud-init afresh. Once, in Proxmox VE 8.2 or later, let the storage hold
+# disk images: Datacenter → Storage → local → Edit → Content: add Import.
+#
+# Point provision-proxmox-vm's template_vmid at the VMID apply prints.
+apiVersion: accretion/v1alpha1
+kind: Environment
+metadata:
+  name: templates
+spec:
+  provider:
+    type: proxmox
+    endpoint: https://pve.example.invalid:8006
+    verify_tls: false
+    token_env: ACCRETE_PROXMOX_TOKEN
+  resources:
+    - name: ubuntu-2404
+      count: 1
+      blueprint: build-proxmox-template
+      inputs:
+        pve_node: pve
+        template_name: ubuntu-24-04-cloud
+        image_url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+        # From https://cloud-images.ubuntu.com/noble/current/SHA256SUMS, the
+        # line for noble-server-cloudimg-amd64.img. "current" moves: pin a
+        # dated directory (noble/20261101/) to build the same image again.
+        image_sha256: REPLACE_WITH_THE_SHA256_FROM_SHA256SUMS
+        image_filename: noble-server-cloudimg-amd64.qcow2
+        download_storage: local
+        disk_storage: local-lvm
+        disk_size: 20G
+        cores: 2
+        memory_mb: 2048

@@ -242,6 +242,9 @@ func Blueprints() []plan.Blueprint {
 			Name:        "Build a bootable template from a cloud image (Proxmox)",
 			Description: "Download a distribution's cloud image onto the cluster, import it as a VM's boot disk, attach a cloud-init drive, and convert the result into the template a provisioning run clones. For a cluster with no templates yet — which is every Proxmox install until somebody makes one.",
 			Role:        "build_image",
+			// accrete removes a template it built; Sybil's own catalog
+			// keeps it out of reach of a manifest's removal.
+			DestroyedBy: "destroy-proxmox-vm",
 			Inputs: []plan.BlueprintInput{
 				{
 					Name:     "integration",
@@ -275,7 +278,7 @@ func Blueprints() []plan.Blueprint {
 					Required: true,
 					Default:  "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2",
 					Label:    "Cloud image URL",
-					Help:     "The node fetches this itself — nothing is proxied through Sybil, so the node has to reach it. It must be a cloud image, one with cloud-init and the QEMU guest agent already in it, not an installer ISO.",
+					Help:     "The node fetches this itself — nothing is proxied through Sybil, so the node has to reach it. accrete fetches it on the machine running accrete instead, and then needs image_sha256. It must be a cloud image, one with cloud-init in it, not an installer ISO. The QEMU guest agent need not be in it: the template never boots, and Sybil's enrolment installs it on each clone's first boot (with accrete, list qemu-guest-agent in the clone's bootstrap packages).",
 				},
 				{
 					Name:  "image_sha256",
@@ -341,6 +344,92 @@ func Blueprints() []plan.Blueprint {
 					Default: "virtio,bridge=vmbr0",
 					Label:   "Network device",
 					Help:    "The NIC every clone inherits, e.g. virtio,bridge=vmbr0",
+				},
+				{
+					Name:    "bios",
+					Type:    "string",
+					Default: "seabios",
+					Label:   "Firmware",
+					Help:    "seabios (BIOS) or ovmf (UEFI). Most cloud images boot either; ovmf adds an EFI vars disk on the disk storage. Clones inherit it.",
+				},
+				{
+					Name:  "machine",
+					Type:  "string",
+					Label: "Machine type",
+					Help:  "Empty for Proxmox's default (i440fx), or q35 for PCIe. ovmf is usually paired with q35.",
+				},
+				{
+					Name:    "tags",
+					Type:    "string",
+					Default: "sybil-template",
+					Label:   "Tags",
+					Help:    "Proxmox tags on the template, separated by semicolons. Clones inherit them.",
+				},
+				{
+					Name:  "ciuser",
+					Type:  "string",
+					Label: "Default user",
+					Help:  "The cloud-init user a clone made by hand in Proxmox gets. Sybil's and accrete's own runs write their own first-boot config instead.",
+				},
+				{
+					Name:  "sshkeys",
+					Type:  "string",
+					Label: "Default SSH public keys",
+					Help:  "Public keys for that user, one per line (ssh-ed25519 ..., ssh-rsa ...). Same scope as the default user.",
+				},
+				{
+					Name:    "ipconfig0",
+					Type:    "string",
+					Default: "ip=dhcp",
+					Label:   "Default network",
+					Help:    "cloud-init addressing of the first card for clones made by hand: ip=dhcp, or ip=10.0.0.5/24,gw=10.0.0.1 (every such clone then takes that address).",
+				},
+				{
+					Name:  "nameserver",
+					Type:  "string",
+					Label: "Default DNS servers",
+					Help:  "Space-separated addresses for clones made by hand. Empty: the DHCP server's or the node's.",
+				},
+				{
+					Name:  "searchdomain",
+					Type:  "string",
+					Label: "Default search domain",
+					Help:  "e.g. lab.example. Empty: the DHCP server's or the node's.",
+				},
+				{
+					Name:  "bake",
+					Type:  "bootstrap",
+					Label: "Bake into the template",
+					Help:  "Users with their SSH keys and sudo, packages, timezone, files and commands applied once, before the template is made: the template boots one time with this config, seals itself (cloud-init state, machine-id and SSH host keys removed, so every clone is a new machine) and powers off. Every clone then has them. No secrets: whatever is baked is in every clone.",
+				},
+				{
+					Name:    "bake_guest_agent",
+					Type:    "bool",
+					Default: false,
+					Label:   "Bake in the QEMU guest agent",
+					Help:    "Installs and enables qemu-guest-agent in that one boot, so clones report their addresses from their first start. Boots the template once even with nothing else to bake.",
+				},
+				{
+					Name:    "bake_upgrade",
+					Type:    "bool",
+					Default: false,
+					Label:   "Upgrade packages while baking",
+					Help:    "Upgrades the image's packages in that one boot, so clones start up to date. Boots the template once.",
+				},
+				{
+					Name:     "seed_storage",
+					Type:     "string",
+					Default:  "local",
+					Label:    "Bake seed storage",
+					Help:     "A storage that takes ISO content: holds the one-boot config while baking, removed afterwards.",
+					Selector: "snippet_storage",
+				},
+				{
+					Name:    "bake_timeout_minutes",
+					Type:    "int",
+					Default: 30,
+					Label:   "Bake deadline (minutes)",
+					Help:    "How long the bake boot may take before the build stops and says so. An upgrade on a slow mirror takes longest.",
 				},
 				{
 					Name:    "on_enrolment_failure",

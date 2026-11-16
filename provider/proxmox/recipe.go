@@ -14,8 +14,8 @@ import (
 var poolName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // BuildableBlueprint is the clone blueprint accrete builds with a Writer.
-// It also builds ISOBlueprint, InstallBlueprint and ImageBlueprint; the
-// template build is refused by name.
+// It also builds ISOBlueprint, InstallBlueprint, ImageBlueprint and
+// TemplateBlueprint.
 const BuildableBlueprint = "provision-proxmox-vm"
 
 // ISOBlueprint is Sybil's blueprint for a VM that boots an installer which
@@ -32,8 +32,8 @@ const ISOBlueprint = "provision-proxmox-iso-vm"
 //
 // See openspec accretion-apply, D4 and D8.
 func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
-	if blueprint != BuildableBlueprint && blueprint != InstallBlueprint && blueprint != ImageBlueprint && blueprint != ISOBlueprint {
-		return provider.Recipe{}, fmt.Errorf("blueprint %q is not one accrete builds; it builds %s, %s, %s and %s", blueprint, BuildableBlueprint, ISOBlueprint, InstallBlueprint, ImageBlueprint)
+	if blueprint != BuildableBlueprint && blueprint != InstallBlueprint && blueprint != ImageBlueprint && blueprint != ISOBlueprint && blueprint != TemplateBlueprint {
+		return provider.Recipe{}, fmt.Errorf("blueprint %q is not one accrete builds; it builds %s, %s, %s, %s and %s", blueprint, BuildableBlueprint, ISOBlueprint, InstallBlueprint, ImageBlueprint, TemplateBlueprint)
 	}
 	str := func(key, def string) string {
 		v, ok := inputs[key]
@@ -65,6 +65,9 @@ func Recipe(blueprint string, inputs map[string]any) (provider.Recipe, error) {
 	}
 	if blueprint == ISOBlueprint {
 		return isoRecipe(inputs, str, num)
+	}
+	if blueprint == TemplateBlueprint {
+		return templateRecipe(inputs, str, num)
 	}
 	nics, network, err := recipeNetwork(str)
 	if err != nil {

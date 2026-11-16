@@ -383,6 +383,51 @@ accrete never sees inside the machine, so "accepted" says only that it runs
 as declared, not that the install worked. No answer disc is made, no guest
 agent is read, and the ISO is never removed.
 
+### Build a cloud-init template: `build-proxmox-template`
+
+The template `provision-proxmox-vm` clones, made from a distribution's cloud
+image with Sybil's own blueprint and inputs, so one manifest builds it from
+the command line or from Sybil. apply fetches the image when the storage lacks
+it (as for `image-proxmox-vm`, and only with `image_sha256`), creates a VM
+whose disk is a copy of it grown to `disk_size`, attaches the cloud-init drive
+on `disk_storage`, puts the console on the first serial port, and converts the
+VM into a template. The VM is never started: cloud-init has then claimed no
+instance, and every clone runs it afresh with its own config. For the same
+reason the QEMU guest agent is not baked in; Sybil's enrolment installs it on
+each clone, and with accrete you list `qemu-guest-agent` in the clone's
+bootstrap packages. `accrete destroy` removes the template; the image stays.
+See `examples/cloud-template.yaml`.
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `pve_node` | `pve` | |
+| `template_name` | `debian-12-cloud` | The template's name; a DNS label. |
+| `image_url` | (required) | The cloud image (`http` or `https`). |
+| `image_sha256` | none | Needed when accrete has to fetch the image; recorded as declared otherwise. |
+| `image_filename` | last part of the URL | Kept as `download_storage:import/<name>`; a `.img` is kept as `.qcow2`. |
+| `download_storage` | `local` | Takes Import content. |
+| `disk_storage` | `local-lvm` | The template's disk and its cloud-init drive. |
+| `disk_size` | `20G` | Whole GiB; every clone starts at this size. Grows only. |
+| `cpu`, `cores`, `memory_mb`, `net0` | `x86-64-v2-AES`, 2, 2048, `virtio,bridge=vmbr0` | What clones inherit. |
+| `bios` | `seabios` | `seabios` or `ovmf` (UEFI; an EFI vars disk is added on `disk_storage`). |
+| `machine` | Proxmox's | `q35`, or empty for i440fx. |
+| `tags` | none (`sybil-template` in Sybil) | `;`-separated Proxmox tags. |
+| `ciuser`, `sshkeys`, `ipconfig0`, `nameserver`, `searchdomain` | none, `ipconfig0` `ip=dhcp` in Sybil | The template's own cloud-init defaults, used by a clone made by hand in Proxmox. A build that writes its own seed (Sybil's, accrete's) replaces them. `sshkeys`: one public key per line. |
+| `bake` | none | A bootstrap profile (users, packages, timezone, files, run) baked into the template: see below. No secrets. |
+| `bake_guest_agent` | false | Install and enable qemu-guest-agent while baking. |
+| `bake_upgrade` | false | Upgrade the image's packages while baking. |
+| `seed_storage` | `local` | Takes ISO content; holds the bake seed until the bake is over. |
+| `bake_timeout_minutes` | 30 | How long one apply waits for the bake boot to power the VM off. |
+| `on_enrolment_failure` | `destroy` | Sybil's; ignored. |
+
+**Baking.** With any of `bake`, `bake_guest_agent` or `bake_upgrade`, the VM
+boots once before it is converted, Packer-style: cloud-init applies the
+profile from a seed disc, then seals the guest (`cloud-init clean`, an empty
+machine-id, no SSH host keys, so each clone is a new instance with its own
+keys) and powers it off. accrete then takes the seed off, attaches the
+cloud-init drive and converts. A bake that never powers off is left as it is
+for a look at its console; run apply again to keep waiting.
+
 ### Build from a disk image, any OS: `image-proxmox-vm`
 
 Most operating systems publish a cloud image: a disk that boots straight
@@ -672,8 +717,8 @@ apply refuses these before sending anything, and exits 1:
   replaces one, which would re-plumb every machine on it.
 - **Firewalls.** A resource that declares `firewall:` is refused.
 - **Other blueprints.** Only `provision-proxmox-vm`, `provision-proxmox-iso-vm`,
-  `install-proxmox-vm` and `image-proxmox-vm` are built. The template-building
-  blueprint is refused by name.
+  `install-proxmox-vm`, `image-proxmox-vm` and `build-proxmox-template` are
+  built.
 
 Also not done in v0.1:
 

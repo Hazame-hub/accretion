@@ -37,7 +37,7 @@ func TestRecipeRefusesWhatV01CannotBuild(t *testing.T) {
 		inputs    map[string]any
 		want      string
 	}{
-		"another blueprint": {"build-proxmox-template", base("x", 1), "not one accrete builds"},
+		"another blueprint": {"destroy-proxmox-vm", base("x", 1), "not one accrete builds"},
 		"no prefix":         {BuildableBlueprint, base("ip_address", "10.0.0.5"), "with its prefix"},
 		"gateway on dhcp":   {BuildableBlueprint, base("gateway", "10.0.0.1"), "has no fixed address"},
 		"dns on dhcp":       {BuildableBlueprint, base("nameservers", "10.0.0.1"), "go with a fixed address"},

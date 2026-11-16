@@ -64,6 +64,55 @@ type ImageRecipe struct {
 	// provider does not have it yet. ImageSHA256 is then required. A URL
 	// ending in .xz or .gz is decompressed before upload.
 	URL string
+	// Template, when set, makes the machine a template instead of booting
+	// it: no seed is written and the machine never runs, so cloud-init in
+	// the image has claimed no instance yet and every clone runs it afresh.
+	// SeedFormat and Timeout are then unused.
+	Template *TemplateFinish
+}
+
+// TemplateFinish is what turns a machine whose disk is a copy of a cloud
+// image into a template its clones start from.
+type TemplateFinish struct {
+	// CloudInitStorage is where the provider's own cloud-init drive is made:
+	// the drive a clone's first-boot config is written to.
+	CloudInitStorage string
+	// BIOS is "seabios" or "ovmf"; "" leaves the provider's default. ovmf
+	// gets an EFI vars disk on CloudInitStorage.
+	BIOS string
+	// Machine is the machine type ("q35"), "" for the provider's default.
+	Machine string
+	// Tags are the template's tags, ";"-separated, "" for none.
+	Tags string
+	// CloudInit is the provider's own cloud-init defaults, which a clone made
+	// by hand from the template uses: user, keys, addressing. A build that
+	// writes its own seed (Sybil's, accrete's) replaces them.
+	CloudInit CloudInitDefaults
+	// Bake, when set, boots the machine once before the conversion: the
+	// recipe's Bootstrap profile is applied by cloud-init from a seed on
+	// SeedStorage, then the guest seals itself (cloud-init's instance state,
+	// machine-id and SSH host keys removed, so each clone is a new instance)
+	// and powers off. The seed is taken off before the cloud-init drive goes
+	// on. ImageRecipe.Timeout bounds the wait.
+	Bake *Bake
+}
+
+// Bake is what a template's one boot installs before it is sealed.
+type Bake struct {
+	// GuestAgent installs and enables qemu-guest-agent.
+	GuestAgent bool
+	// Upgrade upgrades the image's packages first.
+	Upgrade bool
+}
+
+// CloudInitDefaults are a template's own cloud-init settings. Empty fields
+// are left unset.
+type CloudInitDefaults struct {
+	User         string
+	SSHKeys      []string
+	IPConfig0    string
+	Nameserver   string
+	SearchDomain string
 }
 
 // InstallRecipe is how a machine is installed from installer media.

@@ -92,3 +92,14 @@ type ImageUploader interface {
 	// an image is never overwritten.
 	UploadImage(ctx context.Context, placement, volume string, body io.Reader) error
 }
+
+// TemplateMaker is an Installer that can turn a machine it created from a
+// disk image into a template: the provider's cloud-init drive attached, the
+// console on the first serial port, and the machine converted. Optional,
+// found by type assertion. The machine must be stopped and never have run;
+// a repeat on a machine already converted is a no-op.
+type TemplateMaker interface {
+	// MakeTemplate finishes and converts the machine. Applied is false when
+	// it was already a template with its cloud-init drive.
+	MakeTemplate(ctx context.Context, m Target, f TemplateFinish) (applied bool, err error)
+}

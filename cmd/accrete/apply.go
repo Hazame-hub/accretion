@@ -367,6 +367,9 @@ func (a *applier) creatable(e plan.Entry) (provider.Recipe, error) {
 		if err != nil && (rec.Image.URL == "" || !errors.As(err, &refused)) {
 			return rec, err
 		}
+		if err != nil && rec.Image.ImageSHA256 == "" {
+			return rec, fmt.Errorf("%w; accrete fetches %s itself only with image_sha256, the hash its publisher lists, so it can check what it downloaded", err, rec.Image.URL)
+		}
 	}
 	return rec, nil
 }
@@ -405,8 +408,7 @@ func (a *applier) replaceable(e plan.Entry) (*plan.Realization, string) {
 // builtName is the name a recorded machine was built under, which a delete
 // checks; empty when its inputs do not say.
 func builtName(r *plan.Realization) string {
-	s, _ := r.IntentInputs["hostname"].(string)
-	return s
+	return plan.BuiltNameInput(r.IntentInputs)
 }
 
 func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.Recipe, error) {
@@ -432,6 +434,20 @@ func (a *applier) buildable(blueprint string, inputs map[string]any) (provider.R
 	if rec.Image != nil {
 		if _, ok := a.writer.(provider.Installer); !ok {
 			return provider.Recipe{}, errors.New("the provider cannot build machines from disk images")
+		}
+		if t := rec.Image.Template; t != nil {
+			if _, ok := a.writer.(provider.TemplateMaker); !ok {
+				return provider.Recipe{}, errors.New("the provider cannot make templates")
+			}
+			if t.Bake == nil {
+				return rec, nil
+			}
+			if _, ok := a.writer.(provider.SeedRemover); !ok {
+				return provider.Recipe{}, errors.New("baking needs a provider that can take a seed off a machine")
+			}
+			if hasSecrets(rec) {
+				return provider.Recipe{}, errors.New("input bake: references a secret, and whatever is baked into a template is in every clone; put secrets in each clone's own bootstrap instead")
+			}
 		}
 		if _, err := imageSeed(rec, withoutSecrets); err != nil {
 			return provider.Recipe{}, err
@@ -699,8 +715,12 @@ func (a *applier) record(run uuid.UUID, wrong []string, accepted string) error {
 		}
 	}
 	intent := r.Intent
+	kind := string(provider.KindVM)
+	if r.Image != nil && r.Image.Template {
+		kind = string(provider.KindTemplate)
+	}
 	a.state.Realizations = append(a.state.Realizations, plan.Realization{
-		ID: id, IntegrationID: a.provider, AssetID: &asset, ResourceRefID: r.ResourceRefID, ResourceKind: "vm",
+		ID: id, IntegrationID: a.provider, AssetID: &asset, ResourceRefID: r.ResourceRefID, ResourceKind: kind,
 		Managed: true, Intent: &intent, Provenance: plan.Provenance{RunbookName: runbook},
 		IntentInputs: r.IntentInputs, MintedUUID: r.MintedUUID,
 	})
