@@ -38,10 +38,17 @@ type Profile struct {
 type User struct {
 	Name    string   `json:"name" yaml:"name"`
 	SSHKeys []string `json:"ssh_keys,omitempty" yaml:"ssh_keys,omitempty"`
-	// Sudo grants passwordless sudo. There is no password field on purpose:
-	// a password in a manifest is a password in a Git history.
+	// Sudo grants passwordless sudo.
 	Sudo  bool   `json:"sudo,omitempty" yaml:"sudo,omitempty"`
 	Shell string `json:"shell,omitempty" yaml:"shell,omitempty"`
+	// PasswordHash lets the user sign in with a password (the console, or SSH
+	// where the image allows passwords). Only a crypt(3) hash is taken
+	// (yescrypt $y$, SHA-512 $6$ or SHA-256 $5$, e.g. from `mkpasswd -m
+	// sha-512`), never the password: the profile lands in a manifest, a run's
+	// input and the machine's seed, and a hash is what /etc/shadow holds
+	// anyway. Without it the account has no password and is reached by its
+	// keys only.
+	PasswordHash string `json:"password_hash,omitempty" yaml:"password_hash,omitempty"`
 }
 
 // File is a file written before the commands run.
@@ -57,6 +64,7 @@ var (
 	sshKey      = regexp.MustCompile(`^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$`)
 	packageName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_:-]{0,127}$`)
 	timezone    = regexp.MustCompile(`^[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}$`)
+	cryptHash   = regexp.MustCompile(`^\$(6|5)\$(rounds=[0-9]{4,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{43,86}$|^\$y\$[./A-Za-z0-9]+\$[./A-Za-z0-9]{1,86}\$[./A-Za-z0-9]{43}$`)
 	shellPath   = regexp.MustCompile(`^/[A-Za-z0-9/._-]+$`)
 	octalMode   = regexp.MustCompile(`^0?[0-7]{3}$`)
 	ownerSpec   = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}(:[a-z_][a-z0-9_-]{0,31})?$`)
@@ -104,6 +112,9 @@ func (p Profile) Validate() error {
 			return fmt.Errorf("bootstrap: users[%d]: %s is declared twice", i, u.Name)
 		case u.Shell != "" && !shellPath.MatchString(u.Shell):
 			return fmt.Errorf("bootstrap: users[%d]: %q is not a shell path", i, u.Shell)
+		case u.PasswordHash != "" && !cryptHash.MatchString(u.PasswordHash):
+			return fmt.Errorf("bootstrap: users[%d].password_hash is not a crypt hash ($y$, $6$ or $5$, e.g. from mkpasswd -m sha-512); "+
+				"a password is never written in clear", i)
 		}
 		seen[u.Name] = true
 		for j, k := range u.SSHKeys {
@@ -213,6 +224,10 @@ func Render(base Base, p *Profile) (string, error) {
 			users := []any{"default"}
 			for _, u := range p.Users {
 				cu := map[string]any{"name": u.Name, "lock_passwd": true}
+				if u.PasswordHash != "" {
+					cu["passwd"] = u.PasswordHash
+					cu["lock_passwd"] = false
+				}
 				if len(u.SSHKeys) > 0 {
 					keys := make([]string, 0, len(u.SSHKeys))
 					for _, k := range u.SSHKeys {

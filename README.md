@@ -280,7 +280,7 @@ instances would be identical is refused.
 | `nameservers` | none | Comma-separated, with a fixed address. |
 | `pool` | none | A resource pool the clone is created in. Grant the token's machine privileges on `/pool/<name>` to confine it there; `accrete permissions` prints the grants. Set at creation only. |
 | `snippet_storage` | `local` | A storage that takes ISO content. The cloud-init seed lives here. |
-| `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
+| `bootstrap` | none | `users` (name, `ssh_keys`, `sudo`, `shell`, `password_hash`: a crypt hash from `mkpasswd -m sha-512`, never the password; baked into a template it is the same password in every clone), `packages`, `timezone`, `files`, `run`. Written as cloud-config. |
 
 ### Install from an installer ISO: `install-proxmox-vm`
 

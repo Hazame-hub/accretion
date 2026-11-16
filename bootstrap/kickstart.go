@@ -84,7 +84,10 @@ func RenderKickstart(in Install, p *Profile) (string, error) {
 		if u.Shell != "" {
 			opts = " --shell=" + u.Shell
 		}
-		// No password: the account is reached by its keys only.
+		// Without a hash, no password: the account is reached by its keys only.
+		if u.PasswordHash != "" {
+			opts += " --iscrypted --password=" + u.PasswordHash
+		}
 		line("user --name=%s%s", u.Name, opts)
 		for j, k := range u.SSHKeys {
 			k = strings.TrimSpace(k)
