@@ -101,3 +101,27 @@ func TestAProfileIsCheckedFieldByField(t *testing.T) {
 		t.Errorf("empty: %v %v", p, err)
 	}
 }
+
+// A password is taken only as a crypt hash, and every renderer writes it as one.
+func TestAUserPasswordIsAHashNeverClearText(t *testing.T) {
+	const hash = "$6$rounds=5000$abcdefgh$" + "Zx2T4ftQjN0G9nqJ2s6c2rjU8q1C3rZ0v9iH1yq8kM4b7m3Xc1R2a5sQ0p9o8n7l6k5j4h3g2f1e0d9c8b7a6"
+	for _, bad := range []string{"hunter2", "$1$abc$def", "$6$salt$short"} {
+		if _, err := Parse(map[string]any{"users": []any{map[string]any{"name": "ops", "password_hash": bad}}}); err == nil {
+			t.Errorf("%q was taken as a password hash", bad)
+		}
+	}
+	for _, good := range []string{hash, "$y$j9T$F5Jx5fExrKuPp53xLKQ..1$X3DX6M94c7o.9agCG9G317fhZg9SqC.5i5rd.RhAtQ7"} {
+		p, err := Parse(map[string]any{"users": []any{map[string]any{"name": "ops", "password_hash": good}}})
+		if err != nil {
+			t.Fatalf("%q: %v", good, err)
+		}
+		ci, err := Render(Base{Hostname: "h"}, p)
+		if err != nil || !strings.Contains(ci, "passwd: "+good) || !strings.Contains(ci, "lock_passwd: false") {
+			t.Errorf("cloud-init: %v\n%s", err, ci)
+		}
+		ign, err := RenderIgnition(Base{Hostname: "h"}, p)
+		if err != nil || !strings.Contains(ign, `"passwordHash": "`+good+`"`) {
+			t.Errorf("ignition: %v\n%s", err, ign)
+		}
+	}
+}

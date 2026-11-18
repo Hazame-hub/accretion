@@ -81,6 +81,7 @@ func RenderIgnition(base Base, p *Profile) (string, error) {
 		Name              string   `json:"name"`
 		SSHAuthorizedKeys []string `json:"sshAuthorizedKeys,omitempty"`
 		Shell             string   `json:"shell,omitempty"`
+		PasswordHash      string   `json:"passwordHash,omitempty"`
 	}
 	type unit struct {
 		Name     string `json:"name"`
@@ -95,7 +96,7 @@ func RenderIgnition(base Base, p *Profile) (string, error) {
 	files := []file{{Path: "/etc/hostname", Mode: 0o644, Overwrite: true, Contents: data(base.Hostname + "\n")}}
 	var users []user
 	for _, u := range p.Users {
-		cu := user{Name: u.Name, Shell: u.Shell}
+		cu := user{Name: u.Name, Shell: u.Shell, PasswordHash: u.PasswordHash}
 		for _, k := range u.SSHKeys {
 			cu.SSHAuthorizedKeys = append(cu.SSHAuthorizedKeys, strings.TrimSpace(k))
 		}
